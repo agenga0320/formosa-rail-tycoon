@@ -71,6 +71,7 @@ small.you { background: var(--gold); color: #1d2433; border-radius: 4px; padding
 .mapBtns { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 6px; z-index: 10; }
 .mapBtns button { width: 44px; height: 44px; font-size: 19px; cursor: pointer; border-radius: 12px; }
 .mapBtns button.on { background: var(--gold); color: #1d2433; }
+.twIcon { display: inline-block; vertical-align: middle; flex: none; }
 
 /* ---- 狀態列 ---- */
 #status { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); padding: 8px 18px; max-width: min(640px, 92vw); text-align: center; font-size: 15px; z-index: 15; border-radius: 999px; }

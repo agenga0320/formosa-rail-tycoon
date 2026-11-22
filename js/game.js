@@ -33,6 +33,15 @@ function fmt(m) {
   return (neg ? '-' : '') + s;
 }
 
+/* 台灣小圖示：用地圖輪廓資料畫出來（沒有台灣的 emoji） */
+function twIcon(h = 18) {
+  const xs = COAST.map(c => px(c[0])), ys = COAST.map(c => py(c[1]));
+  const x0 = Math.min(...xs) - 20, y0 = Math.min(...ys) - 20;
+  const w = Math.max(...xs) - x0 + 20, hh = Math.max(...ys) - y0 + 20;
+  const pts = COAST.map(c => px(c[0]).toFixed(0) + ',' + py(c[1]).toFixed(0)).join(' ');
+  return `<svg class="twIcon" viewBox="${x0.toFixed(0)} ${y0.toFixed(0)} ${w.toFixed(0)} ${hh.toFixed(0)}" height="${h}" width="${(h * w / hh).toFixed(1)}" aria-hidden="true"><polygon points="${pts}" fill="#4caf50" stroke="#fff" stroke-width="40" stroke-linejoin="round"/></svg>`;
+}
+
 /* ================= 地圖圖形 ================= */
 const G = { nodes: [], adj: [], edges: [], stationNode: {}, stationById: {}, near: [] };
 
@@ -969,7 +978,7 @@ async function localMenu(i) {
         { label: `🃏 卡片 <small>${p.cards.length}</small>`, value: 'cards', disabled: !p.cards.length },
         { label: '🏢 物件資料', value: 'props' },
         { label: '🚩 看目的地', value: 'goal' },
-        { label: '🗾 全國地圖', value: 'map' },
+        { label: `${twIcon(17)} 全國地圖`, value: 'map' },
         { label: '📊 排行榜', value: 'rank' }]);
     if (v === 'roll') { await diceWaitTap(1); return { type: 'roll' }; }
     if (v === 'props') { await showProps(i); continue; }
@@ -994,7 +1003,7 @@ async function viewNode(node, title) {
 async function viewOverview() {
   const z = zoom;
   zoom = 1; applyZoom();
-  await setActions('🗾 全國地圖', [{ label: '↩ 返回', value: 1, cls: 'primary' }]);
+  await setActions(`${twIcon(18)} 全國地圖`, [{ label: '↩ 返回', value: 1, cls: 'primary' }]);
   zoom = z; applyZoom();
   focusNode(S.players[S.turn].pos);
 }
@@ -1279,7 +1288,7 @@ const RULES = `
 <p><b>物件與獨佔：</b>每年決算時，物件帶來「價格 × 收益率」的收入。買下同一站全部物件即可<b>獨佔</b>，收益加倍。</p>
 <p><b>🌧️ 衰尾道人：</b>有人抵達目的地時，離目的地最遠的玩家會被衰尾道人纏上，每回合亂花錢、丟卡片、賤賣物件。久了還會變成更恐怖的<b>大衰尾 ⛈️</b>。移動時經過或停在其他玩家所在的格子，就能把它甩給對方！平安符可以直接趕走它。</p>
 <p><b>🃏 卡片：</b>莒光號／自強號／高鐵卡可以一次擲多顆骰子；停駛卡讓對手停一回合；瞬移卡、導航卡可以傳送；紅包卡、查稅卡可以賺錢。</p>
-<p><b>其他：</b>每個月有機率發生颱風、美食爆紅等事件。遊戲每回合自動存檔。右側的 🗾 可以切換全國地圖。</p>
+<p><b>其他：</b>每個月有機率發生颱風、美食爆紅等事件。遊戲每回合自動存檔。左側的 ${twIcon(15)} 按鈕可以切換全國地圖。</p>
 </div>`;
 
 function showSetup() {
@@ -1322,6 +1331,7 @@ function init() {
   $('#zoomIn').onclick = () => setZoom(zoom * 1.25);
   $('#zoomOut').onclick = () => setZoom(zoom / 1.25);
   $('#zoomFocus').onclick = () => S && focusNode(S.players[S.turn].pos, true);
+  $('#btnOverview').innerHTML = twIcon(26);
   $('#btnOverview').onclick = toggleOverview;
   $('#goalInfo').onclick = () => { if (S) { if (zoom < 1.5) setZoom(2, S.goal); else focusNode(S.goal, true); } };
   $('#btnRules2').onclick = () => modal(RULES, [{ label: '了解', value: true, cls: 'primary' }]);
