@@ -284,10 +284,29 @@ function clientHandle(msg) {
     }
     case 'pos':
       if (!S) break;
+      // 自己剛用箭頭走過了，不用再看一次重播
+      if (NET.justStepped && S.players[msg.mover] && S.players[msg.mover].peer === NET.myId) break;
       msg.pos.forEach((n, k) => { S.players[k].pos = n; });
       S.curse = msg.curse;
       renderTokens();
       if (zoom > 1.05) focusNode(msg.pos[msg.mover]);
+      break;
+    case 'banner':
+      NET.justStepped = false;
+      bannerLocal(msg.html, msg.color);
+      if (S) focusNode(S.players[S.turn].pos, true);
+      break;
+    case 'dice':
+      diceResultLocal(msg.vals);
+      break;
+    case 'roulette':
+      rouletteLocal(msg.name);
+      break;
+    case 'msg':
+      messageLocal(msg.title, msg.body, msg.auto);
+      break;
+    case 'float':
+      floatLocal(msg.node, msg.text, msg.color);
       break;
     case 'status':
       if (!NET.answering) setStatusLocal(msg.html);

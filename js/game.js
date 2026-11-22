@@ -1,5 +1,8 @@
 'use strict';
-/* 寶島鐵道大亨 — 遊戲引擎與介面 */
+/* 寶島鐵道大亨 — 遊戲引擎與介面
+ * 介面流程：全螢幕地圖 + 鏡頭跟隨 → 回合橫幅 → 指令視窗 → 擲骰（點擊停止）
+ * → 用箭頭一步一步前進（顯示剩餘步數）→ 到站事件 → 訊息視窗
+ */
 
 const VW = 880, VH = 1560;
 const px = lon => (lon - 119.85) * 400;
@@ -7,10 +10,11 @@ const py = lat => (25.4 - lat) * 437;
 const COLORS = ['#e53935', '#1e6fd9', '#2e9d4a', '#f08c00'];
 const OFFS = [[-9, -9], [9, -9], [-9, 9], [9, 9]];
 const SAVE_KEY = 'formosa-rail-tycoon-save-v1';
-const ZOOM_KEY = 'formosa-rail-tycoon-zoom';
+const ZOOM_KEY = 'formosa-rail-tycoon-zoom2';
 const TYPE_NAME = { food: '美食', agri: '農產', tour: '觀光', ind: '產業' };
 const SQ_NAME = { blue: '藍色格', red: '紅色格', yellow: '卡片格', station: '車站' };
 const CPU_NAMES = ['阿財', '金水', '美玉'];
+const PIPS = { 1: [4], 2: [0, 8], 3: [0, 4, 8], 4: [0, 2, 6, 8], 5: [0, 2, 4, 6, 8], 6: [0, 2, 3, 5, 6, 8] };
 
 const $ = s => document.querySelector(s);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -67,7 +71,6 @@ function buildGraph() {
     }
     link(prev, B.id, opt && opt.bus);
   });
-  // 每一格最近的車站（顯示用）
   G.near = G.nodes.map(n => n.type === 'station' ? n.sid : null);
   const q = G.nodes.filter(n => n.type === 'station').map(n => n.id);
   while (q.length) {
@@ -91,16 +94,20 @@ function distFrom(src) {
 }
 const dist = (a, b) => distFrom(a)[b];
 
-/* 擲出 steps 步後可停的位置：不能立刻折返（死路除外），經過目的地就停下 */
+/* 往前可走的方向：不能立刻折返（死路除外） */
+function forwardOpts(cur, prev) {
+  const o = G.adj[cur].filter(n => n !== prev);
+  return o.length ? o : G.adj[cur];
+}
+
+/* 擲出 steps 步後可停的位置（經過目的地就停下） */
 function reachable(start, steps) {
   let frontier = [{ node: start, prev: -1, path: [start] }];
   const res = new Map();
   for (let k = 1; k <= steps; k++) {
     const next = new Map();
     for (const st of frontier) {
-      let opts = G.adj[st.node].filter(n => n !== st.prev);
-      if (!opts.length) opts = G.adj[st.node];
-      for (const n of opts) {
+      for (const n of forwardOpts(st.node, st.prev)) {
         const key = n + ',' + st.node;
         if (next.has(key)) continue;
         const path = [...st.path, n];
@@ -115,6 +122,18 @@ function reachable(start, steps) {
   return res;
 }
 
+function validPath(path, start, total) {
+  if (!Array.isArray(path) || path.length < 2 || path[0] !== start) return false;
+  for (let k = 1; k < path.length; k++) {
+    const a = path[k - 1], b = path[k];
+    if (!G.adj[a] || !G.adj[a].includes(b)) return false;
+    if (k >= 2 && b === path[k - 2] && G.adj[a].length > 1) return false;
+    if (k < path.length - 1 && b === S.goal) return false;
+  }
+  const steps = path.length - 1, last = path[path.length - 1];
+  return steps === total || (last === S.goal && steps <= total);
+}
+
 function placeName(node) {
   const n = G.nodes[node];
   if (n.type === 'station') return G.stationById[n.sid].name + '站';
@@ -123,8 +142,10 @@ function placeName(node) {
 
 /* ================= 遊戲狀態 ================= */
 let S = null;
-let zoom = 1.8;
+let zoom = innerWidth < 820 ? 2.6 : 2.0;
+let prevZoom = null;
 let actResolve = null;
+let stepClick = null;
 
 /* ---- 連線狀態（net.js 負責建立連線） ----
  * mode: local 同機輪流 / host 房主（執行遊戲） / client 加入者（只顯示與回答） */
@@ -174,8 +195,8 @@ function incomeOf(i) {
 function newGame(cfg) {
   const start = G.stationNode.taipei;
   S = {
-    ver: 1, year: 1, month: 4, maxYears: cfg.years, speed: cfg.speed, turn: 0, over: false,
-    players: cfg.players.map((p, i) => ({
+    ver: 1, year: 1, month: 4, maxYears: cfg.years, speed: cfg.speed, turn: 0, over: false, introDone: false,
+    players: cfg.players.map(p => ({
       name: p.name, cpu: p.cpu, peer: p.peer || null, color: COLORS[p.slot], cash: 10000, pos: start, cards: ['express', 'express'], skip: false,
     })),
     owner: {}, goal: null, goalBonusBase: 0,
@@ -199,32 +220,43 @@ function save() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(S)); } cat
 function loadSave() { try { const s = JSON.parse(localStorage.getItem(SAVE_KEY)); return s && s.ver === 1 && !s.over ? s : null; } catch (e) { return null; } }
 function clearSave() { try { localStorage.removeItem(SAVE_KEY); } catch (e) { /* ignore */ } }
 
-/* ================= 繪圖 ================= */
+/* ================= 地圖繪製 ================= */
 function buildMapSVG() {
   const svg = $('#map');
   svg.setAttribute('viewBox', `0 0 ${VW} ${VH}`);
-  let h = `<rect x="0" y="0" width="${VW}" height="${VH}" class="sea"/>`;
-  h += `<polygon class="land" points="${COAST.map(([lo, la]) => px(lo).toFixed(1) + ',' + py(la).toFixed(1)).join(' ')}"/>`;
+  let h = `<defs><pattern id="wave" width="40" height="20" patternUnits="userSpaceOnUse"><path d="M0 10 Q10 4 20 10 T40 10" fill="none" stroke="#b9dcef" stroke-width="2"/></pattern></defs>`;
+  h += `<rect x="0" y="0" width="${VW}" height="${VH}" class="sea"/><rect x="0" y="0" width="${VW}" height="${VH}" fill="url(#wave)" opacity=".6"/>`;
+  const pts = COAST.map(([lo, la]) => px(lo).toFixed(1) + ',' + py(la).toFixed(1)).join(' ');
+  h += `<polygon class="landShadow" points="${pts}" transform="translate(6 8)"/><polygon class="land" points="${pts}"/>`;
   h += `<text x="60" y="1480" class="seaText">台灣海峽</text><text x="${VW - 70}" y="900" class="seaText" text-anchor="end">太平洋</text>`;
+  G.edges.forEach(([u, v, bus]) => {
+    const a = G.nodes[u], b = G.nodes[v];
+    h += `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" class="railBed${bus ? ' bus' : ''}"/>`;
+  });
   G.edges.forEach(([u, v, bus]) => {
     const a = G.nodes[u], b = G.nodes[v];
     h += `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" class="rail${bus ? ' bus' : ''}"/>`;
   });
   G.nodes.forEach(n => {
-    if (n.type !== 'station') h += `<circle cx="${n.x}" cy="${n.y}" r="8.5" class="sq ${n.type}" data-node="${n.id}"/>`;
+    if (n.type === 'station') return;
+    h += `<g class="sq ${n.type}" data-node="${n.id}"><rect x="${n.x - 10}" y="${n.y - 10}" width="20" height="20" rx="5"/>`;
+    if (n.type === 'yellow') h += `<text x="${n.x}" y="${n.y + 4.5}">?</text>`;
+    else if (n.type === 'blue') h += `<text x="${n.x}" y="${n.y + 4.5}">+</text>`;
+    else h += `<text x="${n.x}" y="${n.y + 4.5}">−</text>`;
+    h += '</g>';
   });
   STATIONS.forEach(s => {
     const n = G.nodes[G.stationNode[s.id]];
     let lx = n.x, ly = n.y + 6, anchor = 'middle';
-    if (s.lab === 't') ly = n.y - 19;
-    else if (s.lab === 'b') ly = n.y + 40;
-    else if (s.lab === 'l') { lx = n.x - 18; anchor = 'end'; }
-    else { lx = n.x + 18; anchor = 'start'; }
+    if (s.lab === 't') ly = n.y - 21;
+    else if (s.lab === 'b') ly = n.y + 42;
+    else if (s.lab === 'l') { lx = n.x - 20; anchor = 'end'; }
+    else { lx = n.x + 20; anchor = 'start'; }
     h += `<g class="st${s.shop ? ' shop' : ''}" data-node="${n.id}">
-      <rect x="${n.x - 12}" y="${n.y - 12}" width="24" height="24" rx="5"/>
+      <rect x="${n.x - 14}" y="${n.y - 14}" width="28" height="28" rx="6"/>
       <text x="${lx}" y="${ly}" text-anchor="${anchor}">${s.name}</text></g>`;
   });
-  h += '<g id="lyOwn"></g><g id="lyGoal"></g><g id="lyHL"></g><g id="lyTok"></g>';
+  h += '<g id="lyOwn"></g><g id="lyGoal"></g><g id="lyHL"></g><g id="lyTok"></g><g id="lyFx"></g>';
   svg.innerHTML = h;
 }
 
@@ -233,16 +265,16 @@ function renderMapDyn() {
   STATIONS.forEach(s => {
     const n = G.nodes[G.stationNode[s.id]];
     const k = s.props.length, mono = monoOwner(s.id);
-    if (mono != null) h += `<rect x="${n.x - 8}" y="${n.y - 8}" width="16" height="16" rx="3" fill="${S.players[mono].color}"/>`;
+    if (mono != null) h += `<rect x="${n.x - 9}" y="${n.y - 9}" width="18" height="18" rx="3" fill="${S.players[mono].color}"/><text x="${n.x}" y="${n.y + 5}" class="monoStar">★</text>`;
     s.props.forEach((pr, i) => {
       const o = S.owner[s.id + ':' + i];
       const x = n.x + (i - (k - 1) / 2) * 8;
-      h += `<circle cx="${x}" cy="${n.y + 19}" r="3.4" fill="${o == null ? '#c9d1d6' : S.players[o].color}" stroke="#fff" stroke-width="1"/>`;
+      h += `<circle cx="${x}" cy="${n.y + 21}" r="3.4" fill="${o == null ? '#c9d1d6' : S.players[o].color}" stroke="#fff" stroke-width="1"/>`;
     });
   });
   $('#lyOwn').innerHTML = h;
   const g = G.nodes[S.goal];
-  $('#lyGoal').innerHTML = `<circle cx="${g.x}" cy="${g.y}" r="24" class="goalRing"/><text x="${g.x + 4}" y="${g.y - 16}" class="goalFlag">🚩</text>`;
+  $('#lyGoal').innerHTML = `<circle cx="${g.x}" cy="${g.y}" r="26" class="goalRing"/><text x="${g.x + 4}" y="${g.y - 18}" class="goalFlag">🚩</text>`;
   renderTokens();
 }
 
@@ -255,28 +287,41 @@ function renderTokens() {
     arr.forEach((i, k) => {
       const off = arr.length > 1 ? OFFS[k] : [0, 0];
       const p = S.players[i], x = n.x + off[0], y = n.y + off[1];
-      h += `<g class="tok${i === S.turn ? ' cur' : ''}"><circle cx="${x}" cy="${y}" r="11" fill="${p.color}"/><text x="${x}" y="${y + 4.5}">${i + 1}</text></g>`;
-      if (S.curse.holder === i) h += `<text x="${x + 6}" y="${y - 11}" class="curseIco">${S.curse.level > 1 ? '⛈️' : '🌧️'}</text>`;
+      h += `<g class="tok${i === S.turn ? ' cur' : ''}"><circle cx="${x}" cy="${y + 2}" r="12" fill="rgba(0,0,0,.25)"/><circle cx="${x}" cy="${y}" r="12" fill="${p.color}"/><text x="${x}" y="${y + 4.5}">🚃</text></g>`;
+      if (S.curse.holder === i) h += `<text x="${x + 7}" y="${y - 12}" class="curseIco">${S.curse.level > 1 ? '⛈️' : '🌧️'}</text>`;
     });
   }
   $('#lyTok').innerHTML = h;
 }
 
+/* 地圖上的浮動文字（例如 +500萬） */
+function floatLocal(node, text, color) {
+  const n = G.nodes[node];
+  if (!n) return;
+  const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  t.setAttribute('x', n.x);
+  t.setAttribute('y', n.y - 18);
+  t.setAttribute('class', 'floatTxt');
+  t.setAttribute('fill', color || '#fff');
+  t.textContent = text;
+  $('#lyFx').appendChild(t);
+  setTimeout(() => t.remove(), 1700);
+}
+function floatAll(node, text, color) { floatLocal(node, text, color); netSend({ t: 'float', node, text, color }); }
+
+/* ================= HUD ================= */
 function renderTop() {
-  $('#date').textContent = `第${S.year}年 ${S.month}月`;
-  $('#remain').textContent = `／共${S.maxYears}年`;
-  $('#goalInfo').innerHTML = `🚩 目的地 <b>${placeName(S.goal)}</b> <span class="bonus">獎金約 ${fmt(r10(S.goalBonusBase * yf()))}</span>`;
+  $('#month').textContent = S.month + '月';
+  $('#yearInfo').textContent = `第${S.year}年／共${S.maxYears}年`;
+  $('#goalInfo').innerHTML = `<span class="gl">🚩 目的地</span><b>${G.stationById[G.nodes[S.goal].sid].name}</b><small>獎金 ${fmt(r10(S.goalBonusBase * yf()))}</small>`;
 }
 
 function renderPlayers() {
   $('#players').innerHTML = S.players.map((p, i) => `
-    <div class="pl${i === S.turn ? ' cur' : ''}" data-p="${i}">
-      <span class="chip" style="background:${p.color}">${i + 1}</span>
-      <div class="pinfo">
-        <div class="pname">${p.name}${isMine(i) ? ' <small class="you">你</small>' : ''}${p.peer && !isMine(i) ? ' <small class="cpu">🌐</small>' : ''}${p.offline ? ' <small class="skip">離線・電腦代打</small>' : p.cpu ? ' <small class="cpu">電腦</small>' : ''}${S.curse.holder === i ? (S.curse.level > 1 ? ' ⛈️' : ' 🌧️') : ''}${p.skip ? ' <small class="skip">停駛</small>' : ''}</div>
-        <div class="pstat">現金 <b class="${p.cash < 0 ? 'neg' : ''}">${fmt(p.cash)}</b> · 總資產 ${fmt(assets(i))}</div>
-        <div class="pstat">🃏 ${p.cards.length} 張 · 距目的地 ${dist(p.pos, S.goal)} 格</div>
-      </div>
+    <div class="pcard${i === S.turn ? ' cur' : ''}" data-p="${i}" style="--pc:${p.color}">
+      <div class="pTop"><span class="chip">${i + 1}</span><b class="pName">${p.name}</b>${isMine(i) ? '<small class="you">你</small>' : ''}<span class="pIcons">${S.curse.holder === i ? (S.curse.level > 1 ? '⛈️' : '🌧️') : ''}${p.skip ? '⛔' : ''}${p.offline ? '📴' : p.cpu ? '🤖' : p.peer && !isMine(i) ? '🌐' : ''}</span></div>
+      <div class="pMoney ${p.cash < 0 ? 'neg' : ''}">${fmt(p.cash)}</div>
+      <div class="pSub">資產 ${fmt(assets(i))}・🃏${p.cards.length}・距 ${dist(p.pos, S.goal)} 格</div>
     </div>`).join('');
 }
 
@@ -295,7 +340,7 @@ function log(m, c) {
   if ($('#log')) renderLog();
 }
 
-/* ---- 縮放 ---- */
+/* ---- 鏡頭 ---- */
 function applyZoom() {
   const w = $('#mapWrap');
   const fitW = Math.min(w.clientWidth, w.clientHeight * VW / VH);
@@ -308,6 +353,7 @@ function focusNode(node, smooth) {
   const w = $('#mapWrap'), svg = $('#map');
   const sc = parseFloat(svg.style.width) / VW;
   const n = G.nodes[node];
+  if (!n) return;
   const offX = Math.max(0, (w.clientWidth - parseFloat(svg.style.width)) / 2);
   w.scrollTo({ left: n.x * sc + offX - w.clientWidth / 2, top: n.y * sc - w.clientHeight / 2, behavior: smooth ? 'smooth' : 'auto' });
 }
@@ -317,18 +363,36 @@ function setZoom(z, node) {
   applyZoom();
   if (S) focusNode(node != null ? node : S.players[S.turn].pos);
 }
+function toggleOverview() {
+  if (!S) return;
+  if (zoom > 1.05) { prevZoom = zoom; zoom = 1; applyZoom(); }
+  else { zoom = prevZoom || (innerWidth < 820 ? 2.6 : 2.0); applyZoom(); focusNode(S.players[S.turn].pos); }
+  $('#btnOverview').classList.toggle('on', zoom <= 1.05);
+}
 
-/* ================= UI 元件 ================= */
-function setStatusLocal(html) { actResolve = null; $('#actions').innerHTML = `<div class="prompt">${html}</div>`; }
+/* ================= 介面元件 ================= */
+/* 狀態列（畫面下方的小訊息） */
+function setStatusLocal(html) {
+  actResolve = null;
+  stepClick = null;
+  $('#cmd').classList.add('hidden');
+  $('#cmd').innerHTML = '';
+  $('#status').innerHTML = html || '';
+  $('#status').classList.toggle('hidden', !html);
+}
 function setStatus(html) { setStatusLocal(html); netSend({ t: 'status', html }); }
 
-function setActions(html, buttons) {
+/* 指令視窗：一個標題 + 一列指令，回傳被選的值 */
+function setActions(title, buttons, extraCls) {
   return new Promise(res => {
-    actResolve = v => { actResolve = null; $('#lyHL').innerHTML = ''; res(v); };
-    let h = `<div class="prompt">${html}</div><div class="btns">`;
-    buttons.forEach((b, k) => { h += `<button class="btn ${b.cls || ''}" data-k="${k}" ${b.disabled ? 'disabled' : ''}>${b.label}</button>`; });
-    $('#actions').innerHTML = h + '</div>';
-    $('#actions').querySelectorAll('button').forEach(el => {
+    actResolve = v => { actResolve = null; $('#cmd').classList.add('hidden'); $('#lyHL').innerHTML = ''; res(v); };
+    $('#status').classList.add('hidden');
+    let h = `<div class="cmdTitle">${title}</div><div class="cmdList">`;
+    buttons.forEach((b, k) => { h += `<button class="cmdBtn ${b.cls || ''}" data-k="${k}" type="button" ${b.disabled ? 'disabled' : ''}>${b.label}</button>`; });
+    const cmd = $('#cmd');
+    cmd.className = 'win ' + (extraCls || '');
+    cmd.innerHTML = h + '</div>';
+    cmd.querySelectorAll('.cmdBtn').forEach(el => {
       el.onclick = () => actResolve && actResolve(buttons[+el.dataset.k].value);
     });
   });
@@ -339,7 +403,7 @@ function modal(html, buttons = [{ label: '確定', value: true, cls: 'primary' }
   return new Promise(res => {
     const m = $('#modal'), box = m.querySelector('.box');
     let h = html + '<div class="btns">';
-    buttons.forEach((b, k) => { h += `<button class="btn ${b.cls || ''}" data-k="${k}" ${b.disabled ? 'disabled' : ''}>${b.label}</button>`; });
+    buttons.forEach((b, k) => { h += `<button class="btn ${b.cls || ''}" data-k="${k}" type="button" ${b.disabled ? 'disabled' : ''}>${b.label}</button>`; });
     box.innerHTML = h + '</div>';
     m.classList.remove('hidden');
     const seq = ++modalSeq;
@@ -357,12 +421,33 @@ function showAll(html, autoMs) {
   return modal(html, [{ label: '確定', value: true, cls: 'primary' }], autoMs ? { auto: autoMs } : {});
 }
 
+/* 訊息視窗（畫面下方，點一下繼續） */
+let msgSeq = 0;
+function messageLocal(title, body, autoMs) {
+  return new Promise(res => {
+    const m = $('#msg');
+    m.innerHTML = `${title ? `<div class="msgTitle">${title}</div>` : ''}<div class="msgBody">${body}</div><div class="msgNext">▼</div>`;
+    m.classList.remove('hidden');
+    m.classList.remove('pop'); void m.offsetWidth; m.classList.add('pop');
+    const seq = ++msgSeq;
+    let t = null;
+    const close = () => {
+      clearTimeout(t);
+      if (seq === msgSeq) { m.classList.add('hidden'); m.onclick = null; }
+      res(true);
+    };
+    m.onclick = close;
+    if (autoMs) t = setTimeout(close, autoMs);
+  });
+}
+function message(title, body, autoMs) {
+  netSend({ t: 'msg', title, body, auto: autoMs || 3000 });
+  return messageLocal(title, body, autoMs);
+}
 function announce(title, body, auto) {
   const a = auto || !anyHuman() || NET.mode === 'host';
-  return showAll(`<h3>${title}</h3><div class="body">${body}</div>`, a ? 1800 * spd() + (NET.mode === 'host' ? 900 : 400) : 0);
+  return message(title, body, a ? 1900 * spd() + (NET.mode === 'host' ? 900 : 400) : 0);
 }
-
-function toastAll(msg, kind) { toast(msg, kind); netSend({ t: 'toast', msg, kind }); }
 
 function toast(msg, kind) {
   const el = document.createElement('div');
@@ -372,21 +457,96 @@ function toast(msg, kind) {
   setTimeout(() => el.classList.add('out'), 2200);
   setTimeout(() => el.remove(), 2600);
 }
+function toastAll(msg, kind) { toast(msg, kind); netSend({ t: 'toast', msg, kind }); }
 
 async function note(i, msg, kind) {
   log(msg, kind);
-  toastAll(msg, kind);
+  setStatus(`<span class="${kind || ''}">${msg}</span>`);
   renderPlayers();
   netSend({ t: 'state', S: stateForNet() });
-  await sleep(S.players[i].cpu ? 750 * spd() : 700);
+  await sleep(S.players[i].cpu ? 800 * spd() : 900);
 }
 
-function diceHTML(vals) { return `<div class="dice">${vals.map(v => `<span class="die">${v}</span>`).join('')}</div>`; }
+/* ---- 回合橫幅 ---- */
+function bannerLocal(html, color) {
+  const b = $('#banner');
+  b.innerHTML = `<div class="bInner">${html}</div>`;
+  b.style.setProperty('--bc', color || '#e9b949');
+  b.classList.remove('show'); void b.offsetWidth; b.classList.add('show');
+}
+async function banner(html, color, ms) {
+  bannerLocal(html, color);
+  netSend({ t: 'banner', html, color });
+  await sleep(ms);
+}
+
+/* ---- 骰子 ---- */
+const dieHTML = v => `<span class="die${v === 1 ? ' one' : ''}">${[0, 1, 2, 3, 4, 5, 6, 7, 8].map(k => `<i class="${PIPS[v].includes(k) ? 'on' : ''}"></i>`).join('')}</span>`;
+let diceTimer = null;
+function diceSpinLocal(n, text) {
+  const o = $('#diceOverlay');
+  o.classList.remove('hidden');
+  o.classList.add('spin');
+  o.querySelector('.diceText').innerHTML = text || '';
+  clearInterval(diceTimer);
+  const tick = () => { o.querySelector('.diceRow').innerHTML = Array.from({ length: n }, () => dieHTML(rint(1, 6))).join(''); };
+  tick();
+  diceTimer = setInterval(tick, 70);
+}
+async function diceResultLocal(vals) {
+  const o = $('#diceOverlay');
+  if (o.classList.contains('hidden')) { diceSpinLocal(vals.length); await sleep(650); } else await sleep(160);
+  clearInterval(diceTimer);
+  o.onclick = null;
+  o.classList.remove('spin');
+  o.querySelector('.diceRow').innerHTML = vals.map(dieHTML).join('');
+  o.querySelector('.diceText').innerHTML = `前進 <b>${vals.reduce((a, b) => a + b, 0)}</b> 步！`;
+  await sleep(950);
+  o.classList.add('hidden');
+}
+function diceWaitTap(n) {
+  return new Promise(res => {
+    diceSpinLocal(n, '點一下停止！');
+    const o = $('#diceOverlay');
+    o.onclick = () => { o.onclick = null; o.querySelector('.diceText').innerHTML = ''; res(); };
+  });
+}
+
+/* ---- 目的地輪盤 ---- */
+async function rouletteLocal(finalName) {
+  const o = $('#roulette'), nameEl = o.querySelector('.rName');
+  o.classList.remove('hidden', 'done');
+  const names = STATIONS.map(s => s.name);
+  let delay = 45;
+  for (let k = 0; k < 22; k++) {
+    nameEl.textContent = names[(k * 7 + rint(0, names.length - 1)) % names.length];
+    await sleep(delay);
+    delay *= 1.12;
+  }
+  nameEl.textContent = finalName + '站';
+  o.classList.add('done');
+  await sleep(1300);
+  o.classList.add('hidden');
+}
+async function roulette(node) {
+  const name = G.stationById[G.nodes[node].sid].name;
+  netSend({ t: 'roulette', name });
+  render();
+  await rouletteLocal(name);
+  focusNode(node, true);
+  await sleep(500);
+}
 
 /* ================= 回合流程 ================= */
 async function gameLoop() {
   render();
   setZoom(zoom);
+  if (!S.introDone) {
+    S.introDone = true;
+    await banner('<small>遊戲開始</small>寶島鐵道大亨', '#e9b949', 1400);
+    await message('🚩 決定目的地', '大家從 <b>台北站</b> 出發！先用輪盤決定第一個目的地。', anyHuman() && NET.mode !== 'host' ? 0 : 1800);
+    await roulette(S.goal);
+  }
   while (!S.over) {
     save();
     await playTurn(S.turn);
@@ -404,11 +564,10 @@ async function playTurn(i) {
   render();
   focusNode(p.pos, true);
   log(`▶ ${p.name} 的回合`, 'turn');
+  await banner(`<small>第${S.year}年 ${S.month}月</small>${p.name} 的回合`, p.color, p.cpu ? 900 * spd() + 200 : 1100);
   if (p.skip) {
     p.skip = false;
-    setStatus(`<b style="color:${p.color}">${p.name}</b> 停駛中…`);
-    await note(i, `${p.name} 停駛中，這回合無法前進`, 'bad');
-    await sleep(500);
+    await note(i, `⛔ ${p.name} 停駛中，這回合無法前進`, 'bad');
     return;
   }
   const act = p.cpu ? await cpuPreRoll(i) : await humanPreRoll(i);
@@ -417,12 +576,17 @@ async function playTurn(i) {
     p.pos = act.node;
     render();
     focusNode(p.pos, true);
+    floatAll(p.pos, '✨', '#fff');
     await note(i, `✨ ${p.name} 瞬間移動到了 ${placeName(act.node)}`, 'good');
   } else {
-    const total = await rollDice(act.dice, p.cpu);
+    const total = await rollDice(act.dice);
     const ends = reachable(p.pos, total);
-    const target = p.cpu ? cpuChooseEnd(i, ends) : await humanChooseEnd(i, ends);
-    await moveAlong(i, ends.get(target));
+    if (p.cpu) {
+      await moveAlong(i, ends.get(cpuChooseEnd(i, ends)), true);
+    } else {
+      const res = await humanChooseEnd(i, ends, total);
+      await moveAlong(i, res.path, res.animate);
+    }
   }
   await landOn(i);
   if (S.over) return;
@@ -430,43 +594,43 @@ async function playTurn(i) {
   render();
 }
 
-async function rollDice(n, cpu) {
-  let vals = [];
-  for (let f = 0; f < 10; f++) {
-    vals = Array.from({ length: n }, () => rint(1, 6));
-    setStatus(diceHTML(vals));
-    await sleep(55);
-  }
+async function rollDice(n) {
+  const vals = Array.from({ length: n }, () => rint(1, 6));
   const sum = vals.reduce((a, b) => a + b, 0);
-  setStatus(diceHTML(vals) + `<div class="sum">前進 <b>${sum}</b> 步</div>`);
+  setStatus('');
+  netSend({ t: 'dice', vals });
   log(`🎲 ${S.players[S.turn].name} 擲出 ${vals.join('+')}${n > 1 ? ' = ' + sum : ''}`);
-  await sleep(cpu ? 550 * spd() : 600);
+  await diceResultLocal(vals);
   return sum;
 }
 
-async function moveAlong(i, path) {
+async function moveAlong(i, path, animate) {
   const p = S.players[i];
   let transferred = false;
-  const step = p.cpu ? 120 * spd() : 150;
+  const step = p.cpu ? 130 * spd() : 160;
   for (let k = 1; k < path.length; k++) {
-    p.pos = path[k];
-    renderTokens();
-    netSend({ t: 'pos', pos: S.players.map(q => q.pos), curse: S.curse, mover: i });
-    if (zoom > 1.05) focusNode(p.pos);
+    if (animate) {
+      p.pos = path[k];
+      renderTokens();
+      netSend({ t: 'pos', pos: S.players.map(q => q.pos), curse: S.curse, mover: i });
+      if (zoom > 1.05) focusNode(p.pos);
+    }
     if (S.curse.holder === i && !transferred) {
-      const j = S.players.findIndex((q, jj) => jj !== i && q.pos === p.pos);
+      const j = S.players.findIndex((q, jj) => jj !== i && q.pos === path[k]);
       if (j >= 0) {
         transferred = true;
         S.curse.holder = j;
         S.curse.turns = 0;
+        p.pos = path[k];
         render();
         log(`💨 ${p.name} 擦身而過，把衰尾道人甩給了 ${S.players[j].name}！`, 'good');
-        toastAll(`💨 ${p.name} 把衰尾道人甩給了 ${S.players[j].name}！`, 'good');
-        await sleep(900);
+        await message('💨 甩掉衰尾道人！', `${p.name} 擦身而過，把衰尾道人甩給了 <b style="color:${S.players[j].color}">${S.players[j].name}</b>！`, 1600);
       }
     }
-    await sleep(step);
+    if (animate) await sleep(step);
   }
+  p.pos = path[path.length - 1];
+  render();
 }
 
 async function landOn(i) {
@@ -475,15 +639,23 @@ async function landOn(i) {
   if (n.type === 'blue') {
     const g = r10(rint(300, 1500) * yf());
     p.cash += g;
+    floatAll(p.pos, '+' + fmt(g), '#7fd3ff');
     await note(i, `🔵 ${p.name} 停在藍色格，獲得 ${fmt(g)}`, 'good');
   } else if (n.type === 'red') {
     const l = r10(rint(200, 1200) * yf());
     p.cash -= l;
+    floatAll(p.pos, '-' + fmt(l), '#ff8a80');
     await note(i, `🔴 ${p.name} 停在紅色格，損失 ${fmt(l)}`, 'bad');
   } else if (n.type === 'yellow') {
     const k = drawCard();
+    floatAll(p.pos, '🃏', '#ffd54f');
     if (p.cards.length >= 8) await note(i, `🟡 ${p.name} 抽到「${CARDS[k].name}」，但手牌已滿只好丟掉`);
-    else { p.cards.push(k); await note(i, `🟡 ${p.name} 抽到了「${CARDS[k].name}」`, 'good'); }
+    else {
+      p.cards.push(k);
+      log(`🟡 ${p.name} 抽到了「${CARDS[k].name}」`, 'good');
+      render();
+      await message('🟡 卡片格', `${p.name} 抽到了 <b>「${CARDS[k].name}」</b><br><small>${CARDS[k].desc}</small>`, p.cpu || NET.mode === 'host' ? 1700 * spd() + 300 : 0);
+    }
   } else if (n.type === 'station') {
     await stationVisit(i);
   }
@@ -502,6 +674,8 @@ async function reachGoal(i) {
   p.cash += bonus;
   log(`🎉 ${p.name} 第一個抵達${placeName(S.goal)}，獲得獎金 ${fmt(bonus)}`, 'goal');
   render();
+  floatAll(p.pos, '+' + fmt(bonus), '#ffd54f');
+  await banner(`<small>抵達目的地</small>🎉 ${G.stationById[G.nodes[S.goal].sid].name}站`, p.color, 1300);
   await announce('🎉 抵達目的地！', `<b style="color:${p.color}">${p.name}</b> 第一個抵達 <b>${placeName(S.goal)}</b>！<br>獲得獎金 <b class="big">${fmt(bonus)}</b>`, p.cpu);
   const c = S.curse;
   if (c.holder === null || c.holder === i) {
@@ -516,13 +690,14 @@ async function reachGoal(i) {
       c.holder = far;
       c.turns = 0;
       render();
+      focusNode(S.players[far].pos, true);
       log(`🌧️ 衰尾道人纏上了離目的地最遠的 ${S.players[far].name}`, 'bad');
       await announce('🌧️ 衰尾道人出現了', `離目的地最遠的 <b style="color:${S.players[far].color}">${S.players[far].name}</b> 被衰尾道人纏上了……<br><small>移動時碰到（經過或停在同一格）其他玩家，就能把它甩給對方！</small>`, p.cpu);
     }
   }
   pickGoal(S.goal, 14);
-  render();
-  await announce('🚩 新的目的地', `下一個目的地是 <b>${placeName(S.goal)}</b>！`, p.cpu);
+  await roulette(S.goal);
+  focusNode(p.pos, true);
 }
 
 async function curseTurn(i) {
@@ -534,6 +709,7 @@ async function curseTurn(i) {
     c.level = 2;
     render();
     log(`⛈️ 衰尾道人變身成大衰尾！`, 'bad');
+    await banner('<small>糟糕！</small>⛈️ 大衰尾登場', '#6a1b9a', 1300);
     await announce('⛈️ 衰尾道人變身了！', `跟著 <b>${p.name}</b> 太久，衰尾道人變成了<b class="big">「大衰尾」</b>！<br>災情會變得更嚴重……`, p.cpu);
     return;
   }
@@ -544,6 +720,7 @@ async function curseTurn(i) {
     if (r < 0.45) {
       const l = r10(rint(200, 900) * y);
       p.cash -= l;
+      floatAll(p.pos, '-' + fmt(l), '#ff8a80');
       msg = pick([`衰尾道人拿你的錢去買刮刮樂，全部槓龜，花掉 ${fmt(l)}`,
         `衰尾道人在夜市狂吃，帳單 ${fmt(l)} 算你的`,
         `衰尾道人買了一台用不到的按摩椅，花掉 ${fmt(l)}`]);
@@ -564,6 +741,7 @@ async function curseTurn(i) {
     if (r < 0.45) {
       const l = r10(rint(3000, 12000) * y);
       p.cash -= l;
+      floatAll(p.pos, '-' + fmt(l), '#ff8a80');
       msg = `大衰尾開了一家注定倒閉的公司，賠掉 <b>${fmt(l)}</b>！`;
     } else if (r < 0.75 && keys.length) {
       const sid = pick(keys).split(':')[0];
@@ -590,7 +768,19 @@ async function endMonth() {
   S.month = S.month === 12 ? 1 : S.month + 1;
   log(`📅 第${S.year}年 ${S.month}月`, 'month');
   render();
+  await banner(`<small>第${S.year}年</small>${S.month}月`, '#e9b949', 1000 * (anyHuman() ? 1 : spd()) + 100);
   await monthEvent();
+}
+
+function rankBarsHTML(rows, showInc) {
+  const max = Math.max(1, ...rows.map(r => r.a));
+  return `<div class="rank">${rows.map((r, k) => `
+    <div class="rankRow">
+      <span class="rk">${['🥇', '🥈', '🥉', '4'][k]}</span>
+      <span class="rn" style="color:${r.p.color}">${r.p.name}</span>
+      <div class="bar"><i style="width:${Math.max(3, r.a / max * 100)}%;background:${r.p.color}"></i></div>
+      <span class="ra">${fmt(r.a)}${showInc ? `<small>收益 +${fmt(r.inc)}</small>` : ''}</span>
+    </div>`).join('')}</div>`;
 }
 
 async function settlement() {
@@ -598,21 +788,19 @@ async function settlement() {
   rows.sort((a, b) => b.a - a.a);
   log(`💰 第${S.year}年度決算完成`, 'month');
   render();
-  const body = `<table class="tbl"><tr><th>名次</th><th>玩家</th><th>本年收益</th><th>總資產</th></tr>${rows.map((r, k) => `
-    <tr><td>${k + 1}</td><td style="color:${r.p.color};font-weight:700">${r.p.name}</td><td>+${fmt(r.inc)}</td><td>${fmt(r.a)}</td></tr>`).join('')}</table>
-    <p class="hint">物件收益 = 價格 × 收益率；獨佔車站的物件收益加倍。</p>`;
-  await showAll(`<h3>💰 第${S.year}年度 決算</h3>${body}`, NET.mode === 'host' ? 5000 : anyHuman() ? 0 : 2500);
+  await banner(`<small>3月</small>💰 年度決算`, '#e9b949', 1200);
+  await showAll(`<h3>💰 第${S.year}年度 決算</h3>${rankBarsHTML(rows, true)}
+    <p class="hint">物件收益 = 價格 × 收益率；獨佔車站的物件收益加倍。</p>`, NET.mode === 'host' ? 5000 : anyHuman() ? 0 : 2500);
 }
 
 async function endGame() {
   S.over = true;
   clearSave();
   const rows = S.players.map((p, i) => ({ p, a: assets(i) })).sort((a, b) => b.a - a.a);
-  const medal = ['🥇', '🥈', '🥉', '4'];
   render();
   setStatus('遊戲結束');
-  const html = `<h3>🏆 遊戲結束</h3><p><b style="color:${rows[0].p.color}">${rows[0].p.name}</b> 成為寶島鐵道大亨！</p>
-    <table class="tbl"><tr><th></th><th>玩家</th><th>總資產</th></tr>${rows.map((r, k) => `<tr><td>${medal[k]}</td><td style="color:${r.p.color};font-weight:700">${r.p.name}</td><td>${fmt(r.a)}</td></tr>`).join('')}</table>`;
+  await banner(`<small>遊戲結束</small>🏆 ${rows[0].p.name}`, rows[0].p.color, 1500);
+  const html = `<h3>🏆 遊戲結束</h3><p><b style="color:${rows[0].p.color}">${rows[0].p.name}</b> 成為寶島鐵道大亨！</p>${rankBarsHTML(rows, false)}`;
   NET.ended = true;
   netSend({ t: 'end', html });
   const v = await modal(html, [{ label: '再玩一次', value: 'again', cls: 'primary' }, { label: '看看地圖', value: 'stay' }]);
@@ -660,6 +848,7 @@ async function monthEvent() {
   }
   log(`${title}`, 'month');
   render();
+  await banner(`<small>臨時新聞</small>${title}`, '#c62828', 1100);
   await announce(title, body, false);
 }
 
@@ -670,6 +859,8 @@ async function applyCard(i, idx, target) {
   if (c.kind === 'stop' && (target == null || target === i || !S.players[target])) return null;
   p.cards.splice(idx, 1);
   log(`🃏 ${p.name} 使用了「${c.name}」`);
+  render();
+  await message('🃏 使用卡片', `${p.name} 使用了 <b>「${c.name}」</b>`, 1100 * (p.cpu ? spd() : 1) + 200);
   switch (c.kind) {
     case 'move': return { type: 'roll', dice: c.dice };
     case 'warp': {
@@ -693,6 +884,7 @@ async function applyCard(i, idx, target) {
     case 'red': {
       const g = r10(rint(1000, 5000) * yf());
       p.cash += g;
+      floatAll(p.pos, '+' + fmt(g), '#ffd54f');
       await note(i, `🧧 ${p.name} 收到紅包 ${fmt(g)}`, 'good');
       return null;
     }
@@ -703,6 +895,7 @@ async function applyCard(i, idx, target) {
       const amt = r10(m * 0.1);
       S.players[t].cash -= amt;
       p.cash += amt;
+      floatAll(S.players[t].pos, '-' + fmt(amt), '#ff8a80');
       await note(i, `🧾 ${p.name} 向 ${S.players[t].name} 查稅，收取 ${fmt(amt)}`, 'good');
       return null;
     }
@@ -721,11 +914,12 @@ function chooseCard(i) {
   const rows = p.cards.map((k, idx) => {
     const c = CARDS[k];
     const dis = k === 'charm' && S.curse.holder !== i;
-    return `<div class="cardRow"><div><b>${c.name}</b><br><small>${c.desc}</small></div>
-      <button class="btn sm primary" data-use="${idx}" ${dis ? 'disabled title="沒有被衰尾道人纏上"' : ''}>使用</button></div>`;
+    return `<div class="cardRow"><div class="cardIco">${c.kind === 'move' ? '🚄' : c.kind === 'warp' || c.kind === 'near' ? '✨' : c.kind === 'stop' ? '⛔' : c.kind === 'charm' ? '🧧' : '💰'}</div>
+      <div class="cardTxt"><b>${c.name}</b><small>${c.desc}</small></div>
+      <button class="btn sm primary" data-use="${idx}" type="button" ${dis ? 'disabled title="沒有被衰尾道人纏上"' : ''}>使用</button></div>`;
   }).join('');
   return new Promise(res => {
-    modal(`<h3>🃏 ${p.name} 的卡片</h3><div class="cards">${rows}</div>`, [{ label: '關閉', value: null }]).then(res);
+    modal(`<h3>🃏 ${p.name} 的卡片（${p.cards.length}/8）</h3><div class="cards">${rows}</div>`, [{ label: '關閉', value: null }]).then(res);
     $('#modal .box').querySelectorAll('[data-use]').forEach(el => {
       el.onclick = () => { $('#modal').classList.add('hidden'); res(+el.dataset.use); };
     });
@@ -734,9 +928,9 @@ function chooseCard(i) {
 
 /* ================= 玩家操作 ================= */
 /* 向玩家 i 詢問一個決定：本機玩家直接顯示介面，遠端玩家透過網路詢問 */
-function askFallback(kind, data) {
+function askFallback(kind) {
   if (kind === 'menu') return { type: 'roll' };
-  if (kind === 'end') return data.keys[0];
+  if (kind === 'end') return null;
   return { done: true };
 }
 
@@ -759,21 +953,29 @@ function ask(i, kind, data) {
 /* 在這台裝置上顯示操作介面，回傳玩家的一個決定 */
 async function localAsk(kind, data) {
   if (kind === 'menu') return localMenu(data.i);
-  if (kind === 'end') return localChooseEnd(data.keys);
+  if (kind === 'end') return localChooseEnd(data);
   if (kind === 'station') return localStation(data.i, G.stationById[data.sid]);
   return null;
 }
 
+/* 指令視窗 */
 async function localMenu(i) {
   const p = S.players[i];
+  focusNode(p.pos, true);
   for (;;) {
     const v = await setActions(
-      `輪到 <b style="color:${p.color}">${p.name}</b>　距離目的地 <b>${dist(p.pos, S.goal)}</b> 格`,
+      `<span class="dot" style="background:${p.color}"></span>${p.name}<small>距目的地 ${dist(p.pos, S.goal)} 格</small>`,
       [{ label: '🎲 擲骰子', value: 'roll', cls: 'primary' },
-        { label: `🃏 卡片（${p.cards.length}）`, value: 'cards', disabled: !p.cards.length },
-        { label: '📋 我的物件', value: 'props' }]);
-    if (v === 'roll') return { type: 'roll' };
+        { label: `🃏 卡片 <small>${p.cards.length}</small>`, value: 'cards', disabled: !p.cards.length },
+        { label: '🏢 物件資料', value: 'props' },
+        { label: '🚩 看目的地', value: 'goal' },
+        { label: '🗾 全國地圖', value: 'map' },
+        { label: '📊 排行榜', value: 'rank' }]);
+    if (v === 'roll') { await diceWaitTap(1); return { type: 'roll' }; }
     if (v === 'props') { await showProps(i); continue; }
+    if (v === 'rank') { await showRanking(); continue; }
+    if (v === 'goal') { await viewNode(S.goal, `🚩 目的地：${placeName(S.goal)}`); continue; }
+    if (v === 'map') { await viewOverview(); continue; }
     if (v === 'cards') {
       const idx = await chooseCard(i);
       if (idx == null) continue;
@@ -784,13 +986,85 @@ async function localMenu(i) {
   }
 }
 
-function localChooseEnd(keys) {
-  $('#lyHL').innerHTML = keys.map(node => { const n = G.nodes[node]; return `<circle cx="${n.x}" cy="${n.y}" r="18" class="hl" data-end="${node}"/>`; }).join('');
-  const btns = keys.map(node => ({
-    label: `${node === S.goal ? '🚩 ' : ''}${placeName(node)}<small>距目的地 ${dist(node, S.goal)}</small>`,
-    value: node, cls: 'end ' + G.nodes[node].type,
-  }));
-  return setActions('要停在哪裡？點地圖上閃爍的圈圈，或按下方按鈕：', btns);
+async function viewNode(node, title) {
+  focusNode(node, true);
+  await setActions(title, [{ label: '↩ 返回', value: 1, cls: 'primary' }]);
+  focusNode(S.players[S.turn].pos, true);
+}
+async function viewOverview() {
+  const z = zoom;
+  zoom = 1; applyZoom();
+  await setActions('🗾 全國地圖', [{ label: '↩ 返回', value: 1, cls: 'primary' }]);
+  zoom = z; applyZoom();
+  focusNode(S.players[S.turn].pos);
+}
+
+/* 用箭頭一步一步前進；也可以直接點虛線圈跳到終點。可以退回。 */
+function localChooseEnd(data) {
+  return new Promise(res => {
+    const i = S.turn, p = S.players[i];
+    const ends = new Map(data.ends);
+    const total = data.total;
+    const path = [data.start];
+    let finished = false;
+    const cmd = $('#cmd');
+    $('#status').classList.add('hidden');
+    const finish = fp => {
+      if (finished) return;
+      finished = true;
+      stepClick = null;
+      $('#lyHL').innerHTML = '';
+      cmd.classList.add('hidden');
+      NET.justStepped = true;
+      res({ path: fp });
+    };
+    const draw = () => {
+      const cur = path[path.length - 1], prev = path.length > 1 ? path[path.length - 2] : -1;
+      const left = total - (path.length - 1);
+      p.pos = cur;
+      renderTokens();
+      if (NET.mode === 'host') netSend({ t: 'pos', pos: S.players.map(q => q.pos), curse: S.curse, mover: i });
+      focusNode(cur);
+      if (left <= 0 || (cur === S.goal && path.length > 1)) { setTimeout(() => finish(path.slice()), 250); }
+      let h = '';
+      for (const [node] of ends) {
+        const n = G.nodes[node];
+        h += `<circle cx="${n.x}" cy="${n.y}" r="17" class="hl" data-end="${node}"/>`;
+      }
+      if (left > 0 && !(cur === S.goal && path.length > 1)) {
+        const c = G.nodes[cur];
+        forwardOpts(cur, prev).forEach(nb => {
+          const n = G.nodes[nb];
+          const ang = Math.atan2(n.y - c.y, n.x - c.x) * 180 / Math.PI;
+          const ax = c.x + (n.x - c.x) * 0.62, ay = c.y + (n.y - c.y) * 0.62;
+          h += `<g class="stepArrow" data-step="${nb}" transform="translate(${ax.toFixed(1)} ${ay.toFixed(1)}) rotate(${ang.toFixed(1)})"><circle r="15"/><path d="M-5,-7 L7,0 L-5,7 Z"/></g>`;
+        });
+      }
+      const c = G.nodes[cur];
+      h += `<g class="stepBubble" transform="translate(${c.x.toFixed(1)} ${(c.y - 34).toFixed(1)})"><rect x="-26" y="-15" width="52" height="26" rx="13"/><text y="4">剩 ${Math.max(0, left)}</text></g>`;
+      $('#lyHL').innerHTML = h;
+      cmd.className = 'win stepWin';
+      cmd.innerHTML = `<div class="cmdTitle"><span class="dot" style="background:${p.color}"></span>剩下 <b class="left">${Math.max(0, left)}</b> 步</div>
+        <div class="hint">點 <b>箭頭</b> 一步一步前進，或直接點 <b>閃爍的圈</b> 停在那裡</div>
+        <div class="cmdList"><button class="cmdBtn" id="btnUndo" type="button" ${path.length <= 1 ? 'disabled' : ''}>↩ 退一步</button></div>`;
+      cmd.classList.remove('hidden');
+      $('#btnUndo').onclick = () => { if (path.length > 1 && !finished) { path.pop(); draw(); } };
+    };
+    stepClick = el => {
+      if (finished) return;
+      if (el.dataset.end != null) {
+        const fp = ends.get(+el.dataset.end);
+        if (fp) { p.pos = fp[fp.length - 1]; renderTokens(); finish(fp.slice()); }
+        return;
+      }
+      const nb = +el.dataset.step;
+      const cur = path[path.length - 1], prev = path.length > 1 ? path[path.length - 2] : -1;
+      if (!forwardOpts(cur, prev).includes(nb)) return;
+      path.push(nb);
+      draw();
+    };
+    draw();
+  });
 }
 
 async function humanPreRoll(i) {
@@ -806,13 +1080,18 @@ async function humanPreRoll(i) {
   }
 }
 
-async function humanChooseEnd(i, ends) {
-  const keys = [...ends.keys()];
-  if (keys.length === 1) return keys[0];
-  keys.sort((a, b) => dist(a, S.goal) - dist(b, S.goal));
-  const v = await ask(i, 'end', { keys });
+/* 回傳 {path, animate}：本機玩家已經自己走過了，不必再播動畫 */
+async function humanChooseEnd(i, ends, total) {
+  const p = S.players[i];
+  const start = p.pos;
+  const keys = [...ends.keys()].sort((a, b) => dist(a, S.goal) - dist(b, S.goal));
+  if (keys.length === 1) return { path: ends.get(keys[0]), animate: true };
+  const v = await ask(i, 'end', { start, total, ends: [...ends.entries()] });
   $('#lyHL').innerHTML = '';
-  return ends.has(+v) ? +v : keys[0];
+  const remote = !!p.peer || p.offline;
+  if (v && validPath(v.path, start, total)) return { path: v.path, animate: remote };
+  p.pos = start;
+  return { path: ends.get(keys[0]), animate: true };
 }
 
 async function humanStation(i, s) {
@@ -826,6 +1105,7 @@ async function humanStation(i, s) {
       p.cash -= pr[1];
       S.owner[s.id + ':' + k] = i;
       log(`🏠 ${p.name} 買下 ${s.name}「${pr[0]}」`, 'buy');
+      floatAll(p.pos, '🏠 ' + pr[0], '#fff');
       if (monoOwner(s.id) === i) { log(`★ ${p.name} 獨佔${s.name}站！`, 'good'); toastAll(`★ ${p.name} 獨佔${s.name}站！收益加倍`, 'good'); }
     } else if (a.card && SHOP_CARDS.includes(a.card) && s.shop) {
       const c = CARDS[a.card];
@@ -838,33 +1118,38 @@ async function humanStation(i, s) {
   }
 }
 
-/* 車站購買視窗：每點一次就回傳一個動作（購買物件／買卡／離開），由引擎處理後再重畫 */
+/* 車站物件視窗：每點一次就回傳一個動作（購買物件／買卡／離開），由引擎處理後再重畫 */
 function localStation(i, s) {
   return new Promise(res => {
     const m = $('#modal'), box = m.querySelector('.box'), p = S.players[i];
     const draw = () => {
       modalSeq++;
-      let h = `<h3>🚉 ${s.name}站</h3><p class="cashline">你的現金：<b class="${p.cash < 0 ? 'neg' : ''}">${fmt(p.cash)}</b></p>`;
-      h += '<table class="tbl props"><tr><th>物件</th><th>價格</th><th>收益率</th><th></th></tr>';
+      const mono = monoOwner(s.id);
+      let h = `<h3 class="stTitle">🚉 ${s.name}站${s.shop ? ' <small class="tag shopTag">卡片商店</small>' : ''}</h3>
+        <p class="cashline">${p.name} 的現金：<b class="${p.cash < 0 ? 'neg' : ''}">${fmt(p.cash)}</b></p><div class="propList">`;
       s.props.forEach((pr, k) => {
         const o = S.owner[s.id + ':' + k];
-        h += `<tr><td>${pr[0]} <small class="tag ${pr[3]}">${TYPE_NAME[pr[3]]}</small></td><td>${fmt(pr[1])}</td><td>${pr[2]}%</td><td>${o == null
-          ? `<button class="btn sm primary" data-buy="${k}" ${p.cash < pr[1] ? 'disabled' : ''}>購買</button>`
-          : `<span class="owner" style="color:${S.players[o].color}">${S.players[o].name}</span>`}</td></tr>`;
+        h += `<div class="propRow${o != null ? ' sold' : ''}">
+          <span class="tag ${pr[3]}">${TYPE_NAME[pr[3]]}</span>
+          <span class="pn">${pr[0]}</span>
+          <span class="pp">${fmt(pr[1])}</span>
+          <span class="pr">${pr[2]}%</span>
+          <span class="pa">${o == null
+    ? `<button class="btn sm primary" data-buy="${k}" type="button" ${p.cash < pr[1] ? 'disabled' : ''}>買</button>`
+    : `<span class="owner" style="color:${S.players[o].color}">${S.players[o].name}</span>`}</span></div>`;
       });
-      h += '</table>';
-      const mono = monoOwner(s.id);
+      h += '</div>';
       h += mono != null ? `<p class="hint">★ ${S.players[mono].name} 獨佔此站，收益加倍！</p>` : '<p class="hint">買下同一站的全部物件即可「獨佔」，決算收益加倍。</p>';
       if (s.shop) {
         h += '<h4>🃏 卡片商店</h4><div class="cards">';
         SHOP_CARDS.forEach(k => {
           const c = CARDS[k];
-          h += `<div class="cardRow"><div><b>${c.name}</b> <small>${fmt(c.price)}</small><br><small>${c.desc}</small></div>
-            <button class="btn sm" data-card="${k}" ${p.cash < c.price || p.cards.length >= 8 ? 'disabled' : ''}>購買</button></div>`;
+          h += `<div class="cardRow"><div class="cardTxt"><b>${c.name}</b> <small>${fmt(c.price)}</small><small>${c.desc}</small></div>
+            <button class="btn sm" data-card="${k}" type="button" ${p.cash < c.price || p.cards.length >= 8 ? 'disabled' : ''}>買</button></div>`;
         });
         h += `</div><p class="hint">手牌 ${p.cards.length}/8</p>`;
       }
-      h += '<div class="btns"><button class="btn primary" data-done="1">離開</button></div>';
+      h += '<div class="btns"><button class="btn primary" data-done="1" type="button">離開車站</button></div>';
       box.innerHTML = h;
       const lock = () => box.querySelectorAll('button').forEach(b => { b.disabled = true; });
       box.querySelectorAll('[data-buy]').forEach(el => el.onclick = () => { lock(); res({ buy: +el.dataset.buy }); });
@@ -888,12 +1173,12 @@ function stationInfo(sid) {
   const s = G.stationById[sid];
   const rows = s.props.map((pr, k) => {
     const o = S.owner[s.id + ':' + k];
-    return `<tr><td>${pr[0]} <small class="tag ${pr[3]}">${TYPE_NAME[pr[3]]}</small></td><td>${fmt(pr[1])}</td><td>${pr[2]}%</td><td>${o == null ? '<small>未售出</small>' : `<span class="owner" style="color:${S.players[o].color}">${S.players[o].name}</span>`}</td></tr>`;
+    return `<div class="propRow${o != null ? ' sold' : ''}"><span class="tag ${pr[3]}">${TYPE_NAME[pr[3]]}</span><span class="pn">${pr[0]}</span><span class="pp">${fmt(pr[1])}</span><span class="pr">${pr[2]}%</span>
+      <span class="pa">${o == null ? '<small>未售出</small>' : `<span class="owner" style="color:${S.players[o].color}">${S.players[o].name}</span>`}</span></div>`;
   }).join('');
-  const d = S.players.map((p, i) => `${i + 1}.${p.name} ${dist(p.pos, G.stationNode[sid])}格`).join('　');
-  modal(`<h3>🚉 ${s.name}站${s.shop ? ' <small class="tag shopTag">卡片商店</small>' : ''}</h3>
-    <table class="tbl props"><tr><th>物件</th><th>價格</th><th>收益率</th><th>擁有者</th></tr>${rows}</table>
-    <p class="hint">距離：${d}</p>`, [{ label: '關閉', value: true }]);
+  const d = S.players.map((p, i) => `<span style="color:${p.color}">${i + 1}.${p.name}</span> ${dist(p.pos, G.stationNode[sid])}格`).join('　');
+  modal(`<h3 class="stTitle">🚉 ${s.name}站${s.shop ? ' <small class="tag shopTag">卡片商店</small>' : ''}</h3>
+    <div class="propList">${rows}</div><p class="hint">距離：${d}</p>`, [{ label: '關閉', value: true }]);
 }
 
 function showProps(i) {
@@ -903,14 +1188,21 @@ function showProps(i) {
   const body = Object.keys(by).length ? Object.entries(by).map(([sid, prs]) => `
     <div class="ownGroup"><b>${G.stationById[sid].name}站</b>${monoOwner(sid) === i ? ' <small class="tag mono">獨佔</small>' : ''}<br>
     <small>${prs.map(pr => `${pr[0]}（${fmt(pr[1])}・${pr[2]}%）`).join('、')}</small></div>`).join('') : '<p>還沒有任何物件。</p>';
-  return modal(`<h3>📋 ${p.name} 的物件</h3>${body}<p class="hint">預估年收益：<b>${fmt(incomeOf(i))}</b>　卡片：${p.cards.map(k => CARDS[k].name).join('、') || '無'}</p>`, [{ label: '關閉', value: true }]);
+  return modal(`<h3>🏢 ${p.name} 的物件</h3>
+    <div class="statGrid"><div><small>現金</small><b>${fmt(p.cash)}</b></div><div><small>總資產</small><b>${fmt(assets(i))}</b></div><div><small>預估年收益</small><b>${fmt(incomeOf(i))}</b></div></div>
+    ${body}<p class="hint">卡片：${p.cards.map(k => CARDS[k].name).join('、') || '無'}</p>`, [{ label: '關閉', value: true }]);
+}
+
+function showRanking() {
+  const rows = S.players.map((p, i) => ({ p, a: assets(i), inc: incomeOf(i) })).sort((a, b) => b.a - a.a);
+  return modal(`<h3>📊 總資產排行</h3>${rankBarsHTML(rows, true)}<p class="hint">收益為目前物件的預估年收益</p>`, [{ label: '關閉', value: true }]);
 }
 
 /* ================= 電腦 AI ================= */
 async function cpuPreRoll(i) {
   const p = S.players[i];
-  setStatus(`<b style="color:${p.color}">${p.name}</b>（電腦）思考中…`);
-  await sleep(450 * spd());
+  setStatus(`🤖 <b style="color:${p.color}">${p.name}</b> 思考中…`);
+  await sleep(500 * spd());
   const useKey = async (key, target) => { const idx = p.cards.indexOf(key); return idx >= 0 ? applyCard(i, idx, target) : null; };
   if (S.curse.holder === i && p.cards.includes('charm')) await useKey('charm');
   while (p.cards.includes('redpacket')) await useKey('redpacket');
@@ -957,6 +1249,7 @@ async function cpuBuy(i, s) {
   }
   if (bought.length) {
     render();
+    floatAll(p.pos, '🏠×' + bought.length, '#fff');
     let msg = `🏠 ${p.name} 在${s.name}站買下 ${bought.join('、')}`;
     if (monoOwner(s.id) === i) msg += `，獨佔${s.name}站！`;
     await note(i, msg, 'buy');
@@ -980,13 +1273,13 @@ const RULES = `
 <h3>📖 遊戲規則</h3>
 <div class="rules">
 <p><b>目標：</b>遊戲年數結束時，<b>總資產（現金＋物件）最多</b>的人獲勝。每年從 4 月開始，3 月底決算。</p>
-<p><b>移動：</b>輪到你時擲骰子，沿鐵路前進。不能立刻往回走（死路除外）。路線分歧時，點地圖上閃爍的圈圈選擇要停在哪。</p>
-<p><b>🚩 目的地：</b>第一個抵達的人拿到大筆獎金（年份越後面越多），接著會出現新的目的地。路過目的地會自動停下。</p>
+<p><b>回合：</b>輪到你時，從指令視窗選「擲骰子」，點一下讓骰子停下。接著點地圖上的 <b>箭頭</b> 一步一步前進（可以退回），或直接點 <b>閃爍的圈</b> 停在那一格。</p>
+<p><b>🚩 目的地：</b>用輪盤決定。第一個抵達的人拿到大筆獎金（年份越後面越多），接著轉出新的目的地。路過目的地會自動停下。</p>
 <p><b>格子：</b><span class="sw blue"></span>藍色格拿錢　<span class="sw red"></span>紅色格扣錢　<span class="sw yellow"></span>黃色格抽卡　<span class="sw st"></span>車站可購買物件（紫框車站有卡片商店）</p>
 <p><b>物件與獨佔：</b>每年決算時，物件帶來「價格 × 收益率」的收入。買下同一站全部物件即可<b>獨佔</b>，收益加倍。</p>
 <p><b>🌧️ 衰尾道人：</b>有人抵達目的地時，離目的地最遠的玩家會被衰尾道人纏上，每回合亂花錢、丟卡片、賤賣物件。久了還會變成更恐怖的<b>大衰尾 ⛈️</b>。移動時經過或停在其他玩家所在的格子，就能把它甩給對方！平安符可以直接趕走它。</p>
 <p><b>🃏 卡片：</b>莒光號／自強號／高鐵卡可以一次擲多顆骰子；停駛卡讓對手停一回合；瞬移卡、導航卡可以傳送；紅包卡、查稅卡可以賺錢。</p>
-<p><b>其他：</b>每個月有機率發生颱風、美食爆紅等事件。遊戲每回合自動存檔。</p>
+<p><b>其他：</b>每個月有機率發生颱風、美食爆紅等事件。遊戲每回合自動存檔。右側的 🗾 可以切換全國地圖。</p>
 </div>`;
 
 function showSetup() {
@@ -1026,20 +1319,27 @@ function init() {
   buildMapSVG();
   try { const z = parseFloat(localStorage.getItem(ZOOM_KEY)); if (z >= 1 && z <= 5) zoom = z; } catch (e) { /* ignore */ }
   window.addEventListener('resize', () => { if (S) applyZoom(); });
-  $('#zoomIn').onclick = () => setZoom(zoom * 1.3);
-  $('#zoomOut').onclick = () => setZoom(zoom / 1.3);
+  $('#zoomIn').onclick = () => setZoom(zoom * 1.25);
+  $('#zoomOut').onclick = () => setZoom(zoom / 1.25);
   $('#zoomFocus').onclick = () => S && focusNode(S.players[S.turn].pos, true);
-  $('#goalInfo').onclick = () => { if (!S) return; if (zoom < 1.5) setZoom(2, S.goal); else focusNode(S.goal, true); };
-  $('#btnRules').onclick = () => modal(RULES, [{ label: '了解', value: true, cls: 'primary' }]);
+  $('#btnOverview').onclick = toggleOverview;
+  $('#goalInfo').onclick = () => { if (S) { if (zoom < 1.5) setZoom(2, S.goal); else focusNode(S.goal, true); } };
   $('#btnRules2').onclick = () => modal(RULES, [{ label: '了解', value: true, cls: 'primary' }]);
+  $('#btnLog').onclick = () => $('#logDrawer').classList.toggle('hidden');
+  $('#btnLogClose').onclick = () => $('#logDrawer').classList.add('hidden');
   $('#btnMenu').onclick = async () => {
-    const v = await modal('<h3>選單</h3><p>遊戲每回合開始時自動存檔，回到標題後可以「繼續上次」。</p>',
-      [{ label: '回到標題', value: 'title' }, { label: '取消', value: null, cls: 'primary' }]);
+    const v = await modal(`<h3>☰ 選單</h3><p class="hint">${NET.mode === 'host' ? '你是房主：離開會讓所有人的遊戲中斷。' : NET.mode === 'client' ? '離開後，用同樣的名字重新加入就能接回位置。' : '遊戲每回合開始時自動存檔，回到標題後可以「繼續上次」。'}</p>`,
+      [{ label: '📖 遊戲規則', value: 'rules' }, { label: '🏠 回到標題', value: 'title' }, { label: '取消', value: null, cls: 'primary' }]);
+    if (v === 'rules') modal(RULES, [{ label: '了解', value: true, cls: 'primary' }]);
     if (v === 'title') location.reload();
   };
   $('#map').addEventListener('click', e => {
-    const hl = e.target.closest('[data-end]');
-    if (hl) { if (actResolve) actResolve(+hl.dataset.end); return; }
+    const stepEl = e.target.closest('[data-step],[data-end]');
+    if (stepEl) {
+      if (stepClick) stepClick(stepEl);
+      else if (stepEl.dataset.end != null && actResolve) actResolve(+stepEl.dataset.end);
+      return;
+    }
     const st = e.target.closest('.st');
     if (st && S && $('#modal').classList.contains('hidden')) stationInfo(G.nodes[+st.dataset.node].sid);
   });
