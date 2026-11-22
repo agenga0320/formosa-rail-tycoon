@@ -126,6 +126,26 @@ let S = null;
 let zoom = 1.8;
 let actResolve = null;
 
+/* ---- 連線狀態（net.js 負責建立連線） ----
+ * mode: local 同機輪流 / host 房主（執行遊戲） / client 加入者（只顯示與回答） */
+const NET = { mode: 'local', peer: null, myId: null, conns: new Map(), hostConn: null, pending: new Map(), askSeq: 0, lastTurn: -1, lobby: [], answering: false, ended: false };
+function netSend(msg) {
+  if (NET.mode !== 'host') return;
+  for (const c of NET.conns.values()) if (c.open) { try { c.send(msg); } catch (e) { /* ignore */ } }
+}
+function sendTo(peerId, msg) {
+  const c = NET.conns.get(peerId);
+  if (c && c.open) { try { c.send(msg); } catch (e) { /* ignore */ } }
+}
+const stateForNet = () => Object.assign({}, S, { log: S.log.slice(0, 30) });
+const cleanName = s => String(s || '').replace(/[<>&"'`\\]/g, '').trim().slice(0, 6);
+function isMine(i) {
+  const p = S.players[i];
+  if (NET.mode === 'client') return p.peer === NET.myId;
+  if (NET.mode === 'host') return !p.peer && !p.cpu;
+  return false;
+}
+
 const yf = () => 1 + (S.year - 1) * 0.25;
 const spd = () => (S.speed === 'fast' ? 0.4 : 1);
 const anyHuman = () => S.players.some(p => !p.cpu);
@@ -156,7 +176,7 @@ function newGame(cfg) {
   S = {
     ver: 1, year: 1, month: 4, maxYears: cfg.years, speed: cfg.speed, turn: 0, over: false,
     players: cfg.players.map((p, i) => ({
-      name: p.name, cpu: p.cpu, color: COLORS[p.slot], cash: 10000, pos: start, cards: ['express', 'express'], skip: false,
+      name: p.name, cpu: p.cpu, peer: p.peer || null, color: COLORS[p.slot], cash: 10000, pos: start, cards: ['express', 'express'], skip: false,
     })),
     owner: {}, goal: null, goalBonusBase: 0,
     curse: { holder: null, level: 1, turns: 0 },
@@ -253,7 +273,7 @@ function renderPlayers() {
     <div class="pl${i === S.turn ? ' cur' : ''}" data-p="${i}">
       <span class="chip" style="background:${p.color}">${i + 1}</span>
       <div class="pinfo">
-        <div class="pname">${p.name}${p.cpu ? ' <small class="cpu">電腦</small>' : ''}${S.curse.holder === i ? (S.curse.level > 1 ? ' ⛈️' : ' 🌧️') : ''}${p.skip ? ' <small class="skip">停駛</small>' : ''}</div>
+        <div class="pname">${p.name}${isMine(i) ? ' <small class="you">你</small>' : ''}${p.peer && !isMine(i) ? ' <small class="cpu">🌐</small>' : ''}${p.offline ? ' <small class="skip">離線・電腦代打</small>' : p.cpu ? ' <small class="cpu">電腦</small>' : ''}${S.curse.holder === i ? (S.curse.level > 1 ? ' ⛈️' : ' 🌧️') : ''}${p.skip ? ' <small class="skip">停駛</small>' : ''}</div>
         <div class="pstat">現金 <b class="${p.cash < 0 ? 'neg' : ''}">${fmt(p.cash)}</b> · 總資產 ${fmt(assets(i))}</div>
         <div class="pstat">🃏 ${p.cards.length} 張 · 距目的地 ${dist(p.pos, S.goal)} 格</div>
       </div>
@@ -264,7 +284,10 @@ function renderLog() {
   $('#log').innerHTML = S.log.map(l => `<div class="lg ${l.c || ''}">${l.m}</div>`).join('');
 }
 
-function render() { renderTop(); renderPlayers(); renderMapDyn(); renderLog(); }
+function render() {
+  renderTop(); renderPlayers(); renderMapDyn(); renderLog();
+  netSend({ t: 'state', S: stateForNet() });
+}
 
 function log(m, c) {
   S.log.unshift({ m, c });
@@ -296,7 +319,8 @@ function setZoom(z, node) {
 }
 
 /* ================= UI 元件 ================= */
-function setStatus(html) { actResolve = null; $('#actions').innerHTML = `<div class="prompt">${html}</div>`; }
+function setStatusLocal(html) { actResolve = null; $('#actions').innerHTML = `<div class="prompt">${html}</div>`; }
+function setStatus(html) { setStatusLocal(html); netSend({ t: 'status', html }); }
 
 function setActions(html, buttons) {
   return new Promise(res => {
@@ -310,6 +334,7 @@ function setActions(html, buttons) {
   });
 }
 
+let modalSeq = 0;
 function modal(html, buttons = [{ label: '確定', value: true, cls: 'primary' }], opts = {}) {
   return new Promise(res => {
     const m = $('#modal'), box = m.querySelector('.box');
@@ -317,17 +342,27 @@ function modal(html, buttons = [{ label: '確定', value: true, cls: 'primary' }
     buttons.forEach((b, k) => { h += `<button class="btn ${b.cls || ''}" data-k="${k}" ${b.disabled ? 'disabled' : ''}>${b.label}</button>`; });
     box.innerHTML = h + '</div>';
     m.classList.remove('hidden');
+    const seq = ++modalSeq;
     let timer = null;
-    const close = v => { clearTimeout(timer); m.classList.add('hidden'); res(v); };
+    // 只關掉自己這個視窗：若已被新的視窗取代，就不要把新的關掉
+    const close = v => { clearTimeout(timer); if (seq === modalSeq) m.classList.add('hidden'); res(v); };
     box.querySelectorAll('.btns:last-child > button').forEach(el => { el.onclick = () => close(buttons[+el.dataset.k].value); });
     if (opts.auto) timer = setTimeout(() => close(buttons[0].value), opts.auto);
   });
 }
 
-function announce(title, body, auto) {
-  const a = auto || !anyHuman();
-  return modal(`<h3>${title}</h3><div class="body">${body}</div>`, [{ label: '確定', value: true, cls: 'primary' }], a ? { auto: 1800 * spd() + 400 } : {});
+/* 所有裝置一起顯示的視窗。線上模式一律自動關閉，避免卡住別人 */
+function showAll(html, autoMs) {
+  netSend({ t: 'show', html, auto: autoMs || 3000 });
+  return modal(html, [{ label: '確定', value: true, cls: 'primary' }], autoMs ? { auto: autoMs } : {});
 }
+
+function announce(title, body, auto) {
+  const a = auto || !anyHuman() || NET.mode === 'host';
+  return showAll(`<h3>${title}</h3><div class="body">${body}</div>`, a ? 1800 * spd() + (NET.mode === 'host' ? 900 : 400) : 0);
+}
+
+function toastAll(msg, kind) { toast(msg, kind); netSend({ t: 'toast', msg, kind }); }
 
 function toast(msg, kind) {
   const el = document.createElement('div');
@@ -340,8 +375,9 @@ function toast(msg, kind) {
 
 async function note(i, msg, kind) {
   log(msg, kind);
-  toast(msg, kind);
+  toastAll(msg, kind);
   renderPlayers();
+  netSend({ t: 'state', S: stateForNet() });
   await sleep(S.players[i].cpu ? 750 * spd() : 700);
 }
 
@@ -415,6 +451,7 @@ async function moveAlong(i, path) {
   for (let k = 1; k < path.length; k++) {
     p.pos = path[k];
     renderTokens();
+    netSend({ t: 'pos', pos: S.players.map(q => q.pos), curse: S.curse, mover: i });
     if (zoom > 1.05) focusNode(p.pos);
     if (S.curse.holder === i && !transferred) {
       const j = S.players.findIndex((q, jj) => jj !== i && q.pos === p.pos);
@@ -422,10 +459,9 @@ async function moveAlong(i, path) {
         transferred = true;
         S.curse.holder = j;
         S.curse.turns = 0;
-        renderTokens();
-        renderPlayers();
+        render();
         log(`💨 ${p.name} 擦身而過，把衰尾道人甩給了 ${S.players[j].name}！`, 'good');
-        toast(`💨 ${p.name} 把衰尾道人甩給了 ${S.players[j].name}！`, 'good');
+        toastAll(`💨 ${p.name} 把衰尾道人甩給了 ${S.players[j].name}！`, 'good');
         await sleep(900);
       }
     }
@@ -565,7 +601,7 @@ async function settlement() {
   const body = `<table class="tbl"><tr><th>名次</th><th>玩家</th><th>本年收益</th><th>總資產</th></tr>${rows.map((r, k) => `
     <tr><td>${k + 1}</td><td style="color:${r.p.color};font-weight:700">${r.p.name}</td><td>+${fmt(r.inc)}</td><td>${fmt(r.a)}</td></tr>`).join('')}</table>
     <p class="hint">物件收益 = 價格 × 收益率；獨佔車站的物件收益加倍。</p>`;
-  await modal(`<h3>💰 第${S.year}年度 決算</h3>${body}`, [{ label: '繼續', value: true, cls: 'primary' }], anyHuman() ? {} : { auto: 2500 });
+  await showAll(`<h3>💰 第${S.year}年度 決算</h3>${body}`, NET.mode === 'host' ? 5000 : anyHuman() ? 0 : 2500);
 }
 
 async function endGame() {
@@ -575,10 +611,12 @@ async function endGame() {
   const medal = ['🥇', '🥈', '🥉', '4'];
   render();
   setStatus('遊戲結束');
-  const v = await modal(`<h3>🏆 遊戲結束</h3><p><b style="color:${rows[0].p.color}">${rows[0].p.name}</b> 成為寶島鐵道大亨！</p>
-    <table class="tbl"><tr><th></th><th>玩家</th><th>總資產</th></tr>${rows.map((r, k) => `<tr><td>${medal[k]}</td><td style="color:${r.p.color};font-weight:700">${r.p.name}</td><td>${fmt(r.a)}</td></tr>`).join('')}</table>`,
-  [{ label: '再玩一次', value: 'again', cls: 'primary' }, { label: '看看地圖', value: 'stay' }]);
-  if (v === 'again') location.reload();
+  const html = `<h3>🏆 遊戲結束</h3><p><b style="color:${rows[0].p.color}">${rows[0].p.name}</b> 成為寶島鐵道大亨！</p>
+    <table class="tbl"><tr><th></th><th>玩家</th><th>總資產</th></tr>${rows.map((r, k) => `<tr><td>${medal[k]}</td><td style="color:${r.p.color};font-weight:700">${r.p.name}</td><td>${fmt(r.a)}</td></tr>`).join('')}</table>`;
+  NET.ended = true;
+  netSend({ t: 'end', html });
+  const v = await modal(html, [{ label: '再玩一次', value: 'again', cls: 'primary' }, { label: '看看地圖', value: 'stay' }]);
+  if (v === 'again') location.href = location.pathname;
 }
 
 const EVENTS = [
@@ -629,7 +667,7 @@ async function monthEvent() {
 async function applyCard(i, idx, target) {
   const p = S.players[i], key = p.cards[idx], c = CARDS[key];
   if (key === 'charm' && S.curse.holder !== i) return null;
-  if (c.kind === 'stop' && target == null) { target = await chooseTarget(i); if (target == null) return null; }
+  if (c.kind === 'stop' && (target == null || target === i || !S.players[target])) return null;
   p.cards.splice(idx, 1);
   log(`🃏 ${p.name} 使用了「${c.name}」`);
   switch (c.kind) {
@@ -695,7 +733,38 @@ function chooseCard(i) {
 }
 
 /* ================= 玩家操作 ================= */
-async function humanPreRoll(i) {
+/* 向玩家 i 詢問一個決定：本機玩家直接顯示介面，遠端玩家透過網路詢問 */
+function askFallback(kind, data) {
+  if (kind === 'menu') return { type: 'roll' };
+  if (kind === 'end') return data.keys[0];
+  return { done: true };
+}
+
+function ask(i, kind, data) {
+  const p = S.players[i];
+  if (NET.mode === 'host') {
+    if (p.offline) return Promise.resolve(askFallback(kind, data));
+    setStatus(`等待 <b style="color:${p.color}">${p.name}</b> 操作…`);
+    if (p.peer) {
+      const id = ++NET.askSeq;
+      return new Promise(res => {
+        NET.pending.set(id, { res, i, kind, data });
+        sendTo(p.peer, { t: 'ask', id, kind, data });
+      });
+    }
+  }
+  return localAsk(kind, data);
+}
+
+/* 在這台裝置上顯示操作介面，回傳玩家的一個決定 */
+async function localAsk(kind, data) {
+  if (kind === 'menu') return localMenu(data.i);
+  if (kind === 'end') return localChooseEnd(data.keys);
+  if (kind === 'station') return localStation(data.i, G.stationById[data.sid]);
+  return null;
+}
+
+async function localMenu(i) {
   const p = S.players[i];
   for (;;) {
     const v = await setActions(
@@ -703,22 +772,19 @@ async function humanPreRoll(i) {
       [{ label: '🎲 擲骰子', value: 'roll', cls: 'primary' },
         { label: `🃏 卡片（${p.cards.length}）`, value: 'cards', disabled: !p.cards.length },
         { label: '📋 我的物件', value: 'props' }]);
-    if (v === 'roll') return { type: 'roll', dice: 1 };
+    if (v === 'roll') return { type: 'roll' };
     if (v === 'props') { await showProps(i); continue; }
     if (v === 'cards') {
       const idx = await chooseCard(i);
       if (idx == null) continue;
-      const r = await applyCard(i, idx);
-      render();
-      if (r) return r;
+      let target = null;
+      if (CARDS[p.cards[idx]].kind === 'stop') { target = await chooseTarget(i); if (target == null) continue; }
+      return { type: 'card', idx, target };
     }
   }
 }
 
-async function humanChooseEnd(i, ends) {
-  const keys = [...ends.keys()];
-  if (keys.length === 1) return keys[0];
-  keys.sort((a, b) => dist(a, S.goal) - dist(b, S.goal));
+function localChooseEnd(keys) {
   $('#lyHL').innerHTML = keys.map(node => { const n = G.nodes[node]; return `<circle cx="${n.x}" cy="${n.y}" r="18" class="hl" data-end="${node}"/>`; }).join('');
   const btns = keys.map(node => ({
     label: `${node === S.goal ? '🚩 ' : ''}${placeName(node)}<small>距目的地 ${dist(node, S.goal)}</small>`,
@@ -727,10 +793,57 @@ async function humanChooseEnd(i, ends) {
   return setActions('要停在哪裡？點地圖上閃爍的圈圈，或按下方按鈕：', btns);
 }
 
-function stationModal(i, s) {
+async function humanPreRoll(i) {
+  const p = S.players[i];
+  for (;;) {
+    const a = await ask(i, 'menu', { i });
+    if (!a || a.type !== 'card') return { type: 'roll', dice: 1 };
+    const idx = +a.idx;
+    if (!(idx >= 0 && idx < p.cards.length)) continue;
+    const r = await applyCard(i, idx, a.target == null ? null : +a.target);
+    render();
+    if (r) return r;
+  }
+}
+
+async function humanChooseEnd(i, ends) {
+  const keys = [...ends.keys()];
+  if (keys.length === 1) return keys[0];
+  keys.sort((a, b) => dist(a, S.goal) - dist(b, S.goal));
+  const v = await ask(i, 'end', { keys });
+  $('#lyHL').innerHTML = '';
+  return ends.has(+v) ? +v : keys[0];
+}
+
+async function humanStation(i, s) {
+  const p = S.players[i];
+  for (;;) {
+    const a = await ask(i, 'station', { i, sid: s.id });
+    if (!a || a.done) break;
+    if (a.buy != null) {
+      const k = +a.buy, pr = s.props[k];
+      if (!pr || p.cash < pr[1] || S.owner[s.id + ':' + k] != null) continue;
+      p.cash -= pr[1];
+      S.owner[s.id + ':' + k] = i;
+      log(`🏠 ${p.name} 買下 ${s.name}「${pr[0]}」`, 'buy');
+      if (monoOwner(s.id) === i) { log(`★ ${p.name} 獨佔${s.name}站！`, 'good'); toastAll(`★ ${p.name} 獨佔${s.name}站！收益加倍`, 'good'); }
+    } else if (a.card && SHOP_CARDS.includes(a.card) && s.shop) {
+      const c = CARDS[a.card];
+      if (p.cash < c.price || p.cards.length >= 8) continue;
+      p.cash -= c.price;
+      p.cards.push(a.card);
+      log(`🃏 ${p.name} 買了「${c.name}」`);
+    }
+    render();
+  }
+}
+
+/* 車站購買視窗：每點一次就回傳一個動作（購買物件／買卡／離開），由引擎處理後再重畫 */
+function localStation(i, s) {
   return new Promise(res => {
     const m = $('#modal'), box = m.querySelector('.box'), p = S.players[i];
     const draw = () => {
+      modalSeq++;
       let h = `<h3>🚉 ${s.name}站</h3><p class="cashline">你的現金：<b class="${p.cash < 0 ? 'neg' : ''}">${fmt(p.cash)}</b></p>`;
       h += '<table class="tbl props"><tr><th>物件</th><th>價格</th><th>收益率</th><th></th></tr>';
       s.props.forEach((pr, k) => {
@@ -753,24 +866,10 @@ function stationModal(i, s) {
       }
       h += '<div class="btns"><button class="btn primary" data-done="1">離開</button></div>';
       box.innerHTML = h;
-      box.querySelectorAll('[data-buy]').forEach(el => el.onclick = () => {
-        const k = +el.dataset.buy, pr = s.props[k];
-        if (p.cash < pr[1] || S.owner[s.id + ':' + k] != null) return;
-        p.cash -= pr[1];
-        S.owner[s.id + ':' + k] = i;
-        log(`🏠 ${p.name} 買下 ${s.name}「${pr[0]}」`, 'buy');
-        if (monoOwner(s.id) === i) { log(`★ ${p.name} 獨佔${s.name}站！`, 'good'); toast(`★ 獨佔${s.name}站！收益加倍`, 'good'); }
-        render(); draw();
-      });
-      box.querySelectorAll('[data-card]').forEach(el => el.onclick = () => {
-        const c = CARDS[el.dataset.card];
-        if (p.cash < c.price || p.cards.length >= 8) return;
-        p.cash -= c.price;
-        p.cards.push(el.dataset.card);
-        log(`🃏 ${p.name} 買了「${c.name}」`);
-        render(); draw();
-      });
-      box.querySelector('[data-done]').onclick = () => { m.classList.add('hidden'); res(); };
+      const lock = () => box.querySelectorAll('button').forEach(b => { b.disabled = true; });
+      box.querySelectorAll('[data-buy]').forEach(el => el.onclick = () => { lock(); res({ buy: +el.dataset.buy }); });
+      box.querySelectorAll('[data-card]').forEach(el => el.onclick = () => { lock(); res({ card: el.dataset.card }); });
+      box.querySelector('[data-done]').onclick = () => { m.classList.add('hidden'); res({ done: true }); };
     };
     draw();
     m.classList.remove('hidden');
@@ -782,7 +881,7 @@ async function stationVisit(i) {
   if (p.cpu) { await cpuBuy(i, s); if (s.shop) await cpuShop(i); return; }
   const free = s.props.some((_, k) => S.owner[s.id + ':' + k] == null);
   if (!free && !s.shop) { await note(i, `${s.name}站的物件都已經有主人了`); return; }
-  await stationModal(i, s);
+  await humanStation(i, s);
 }
 
 function stationInfo(sid) {
@@ -913,7 +1012,7 @@ function startFromSetup() {
   for (let k = 0; k < 4; k++) {
     const t = $('#pt' + k).value;
     if (t === 'off') continue;
-    const name = ($('#pn' + k).value || '').trim() || (t === 'cpu' ? CPU_NAMES[k - 1] || '電腦' : '玩家' + (k + 1));
+    const name = cleanName($('#pn' + k).value) || (t === 'cpu' ? CPU_NAMES[k - 1] || '電腦' : '玩家' + (k + 1));
     players.push({ name, cpu: t === 'cpu', slot: k });
   }
   if (players.length < 2) { $('#setupErr').textContent = '至少需要 2 位參加者'; return; }
@@ -949,8 +1048,18 @@ function init() {
     if (el && S && $('#modal').classList.contains('hidden')) { const i = +el.dataset.p; focusNode(S.players[i].pos, true); showProps(i); }
   });
   $('#btnStart').onclick = startFromSetup;
-  $('#btnContinue').onclick = () => { const s = loadSave(); if (!s) return; S = s; $('#setup').classList.add('hidden'); log('💾 讀取存檔，繼續遊戲', 'month'); gameLoop(); };
+  $('#btnContinue').onclick = () => {
+    const s = loadSave();
+    if (!s) return;
+    S = s;
+    // 線上對戰的存檔：遠端玩家改由電腦代打
+    S.players.forEach(p => { if (p.peer || p.offline) { p.peer = null; p.offline = false; p.cpu = true; } });
+    $('#setup').classList.add('hidden');
+    log('💾 讀取存檔，繼續遊戲', 'month');
+    gameLoop();
+  };
   showSetup();
+  if (typeof netInit === 'function') netInit();
 }
 
 document.addEventListener('DOMContentLoaded', init);

@@ -41,26 +41,57 @@
   <div id="setup" class="overlay hidden">
     <div class="box setupBox">
       <h1>🚂 寶島鐵道大亨</h1>
-      <p class="sub">搭火車環島、買下全台名產，成為台灣第一的鐵道大亨！</p>
-      <div id="pRows"></div>
-      <div class="opts">
-        <label>遊戲年數
-          <select id="years"><option value="1">1 年（試玩）</option><option value="3" selected>3 年</option><option value="5">5 年</option><option value="10">10 年</option><option value="20">20 年</option></select>
-        </label>
-        <label>電腦速度
-          <select id="speed"><option value="normal">普通</option><option value="fast">快</option></select>
-        </label>
+      <p class="sub">搭火車環島、買下全台名產，成為台灣第一的鐵道大亨！ <button id="btnRules2" class="linkBtn" type="button">遊戲規則</button></p>
+      <div class="tabs">
+        <button class="tab on" data-mode="local" type="button">📱 同一台裝置</button>
+        <button class="tab" data-mode="online" type="button">🌐 線上對戰</button>
       </div>
-      <div id="setupErr" class="err"></div>
-      <div class="btns">
-        <button id="btnStart" class="btn primary" type="button">開始遊戲</button>
-        <button id="btnContinue" class="btn" type="button">繼續上次</button>
-        <button id="btnRules2" class="btn" type="button">遊戲規則</button>
+
+      <div id="localPane">
+        <div id="pRows"></div>
+        <div class="opts">
+          <label>遊戲年數
+            <select id="years"><option value="1">1 年（試玩）</option><option value="3" selected>3 年</option><option value="5">5 年</option><option value="10">10 年</option><option value="20">20 年</option></select>
+          </label>
+          <label>電腦速度
+            <select id="speed"><option value="normal">普通</option><option value="fast">快</option></select>
+          </label>
+        </div>
+        <div id="setupErr" class="err"></div>
+        <div class="btns">
+          <button id="btnStart" class="btn primary" type="button">開始遊戲</button>
+          <button id="btnContinue" class="btn" type="button">繼續上次</button>
+        </div>
+      </div>
+
+      <div id="onlinePane" class="hidden">
+        <div id="netForm">
+          <label class="field">你的名字 <input type="text" id="myName" maxlength="6" value="玩家"></label>
+          <div class="netChoice">
+            <div class="netCard">
+              <b>建立房間</b>
+              <p class="hint">你當房主，把房間代碼傳給朋友。</p>
+              <button id="btnHost" class="btn primary" type="button">建立房間</button>
+            </div>
+            <div class="netCard">
+              <b>加入房間</b>
+              <p class="hint">輸入朋友給你的 4 碼代碼。</p>
+              <div class="joinRow">
+                <input type="text" id="joinCode" maxlength="4" placeholder="代碼" autocomplete="off" autocapitalize="characters">
+                <button id="btnJoin" class="btn" type="button">加入</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="lobby"></div>
+        <div id="netErr" class="err"></div>
       </div>
     </div>
   </div>
 
   <script src="js/data.js"></script>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <script src="js/game.js"></script>
+  <script src="js/net.js"></script>
 </body>
 </html>
