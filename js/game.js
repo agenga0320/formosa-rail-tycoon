@@ -204,7 +204,7 @@ function incomeOf(i) {
 function newGame(cfg) {
   const start = G.stationNode.taipei;
   S = {
-    ver: 1, year: 1, month: 4, maxYears: cfg.years, speed: cfg.speed, turn: 0, over: false, introDone: false,
+    ver: 1, year: 1, month: 1, maxYears: cfg.years, speed: cfg.speed, turn: 0, over: false, introDone: false,
     players: cfg.players.map(p => ({
       name: p.name, cpu: p.cpu, peer: p.peer || null, color: COLORS[p.slot], cash: 10000, pos: start, cards: ['express', 'express'], skip: false,
     })),
@@ -213,7 +213,7 @@ function newGame(cfg) {
     log: [],
   };
   pickGoal(start, 20);
-  log(`📅 第1年 4月，遊戲開始！大家從台北站出發`, 'month');
+  log(`📅 第1年 1月，遊戲開始！大家從台北站出發`, 'month');
 }
 
 function pickGoal(fromNode, minDist) {
@@ -870,7 +870,8 @@ async function curseTurn(i) {
 }
 
 async function endMonth() {
-  if (S.month === 3) {
+  // 每年 1 月開始、12 月底決算
+  if (S.month === 12) {
     await settlement();
     S.year++;
     if (S.year > S.maxYears) { await endGame(); return; }
@@ -898,7 +899,7 @@ async function settlement() {
   rows.sort((a, b) => b.a - a.a);
   log(`💰 第${S.year}年度決算完成`, 'month');
   render();
-  await banner(`<small>3月</small>💰 年度決算`, '#e9b949', 1200, 'jingle');
+  await banner(`<small>12月</small>💰 年度決算`, '#e9b949', 1200, 'jingle');
   await showAll(`<h3>💰 第${S.year}年度 決算</h3>${rankBarsHTML(rows, true)}
     <p class="hint">物件收益 = 價格 × 收益率；獨佔車站的物件收益加倍。</p>`, NET.mode === 'host' ? 5000 : anyHuman() ? 0 : 2500);
 }
@@ -1389,7 +1390,7 @@ async function cpuShop(i) {
 const RULES = `
 <h3>📖 遊戲規則</h3>
 <div class="rules">
-<p><b>目標：</b>遊戲年數結束時，<b>總資產（現金＋物件）最多</b>的人獲勝。每年從 4 月開始，3 月底決算。</p>
+<p><b>目標：</b>遊戲年數結束時，<b>總資產（現金＋物件）最多</b>的人獲勝。每年從 1 月開始，12 月底決算。</p>
 <p><b>回合：</b>輪到你時，從指令視窗選「擲骰子」，點一下讓骰子停下。接著點地圖上的 <b>箭頭</b> 一步一步前進（可以退回），或直接點 <b>閃爍的圈</b> 停在那一格。</p>
 <p><b>🚩 目的地：</b>用輪盤決定。第一個抵達的人拿到大筆獎金（年份越後面越多），接著轉出新的目的地。路過目的地會自動停下。</p>
 <p><b>格子：</b><span class="sw blue"></span>藍色格拿錢　<span class="sw red"></span>紅色格扣錢　<span class="sw yellow"></span>黃色格抽卡　<span class="sw st"></span>車站可購買物件（紫框車站有卡片商店）</p>
