@@ -314,6 +314,7 @@ function floatLocal(node, text, color) {
   t.setAttribute('fill', color || '#fff');
   t.textContent = text;
   $('#lyFx').appendChild(t);
+  sfx(text[0] === '+' ? 'coin' : text[0] === '-' ? 'loss' : text.includes('🏠') ? 'buy' : text.includes('🃏') ? 'card' : text.includes('✨') ? 'warp' : 'msg');
   setTimeout(() => t.remove(), 1700);
 }
 function floatAll(node, text, color) { floatLocal(node, text, color); netSend({ t: 'float', node, text, color }); }
@@ -323,6 +324,7 @@ function renderTop() {
   $('#month').textContent = S.month + '月';
   $('#yearInfo').textContent = `第${S.year}年／共${S.maxYears}年`;
   $('#goalInfo').innerHTML = `<span class="gl">🚩 目的地</span><b>${G.stationById[G.nodes[S.goal].sid].name}</b><small>獎金 ${fmt(r10(S.goalBonusBase * yf()))}</small>`;
+  bgmSetMood(S.curse.holder === S.turn && !S.over ? 'curse' : 'normal');
 }
 
 function renderPlayers() {
@@ -438,6 +440,7 @@ function messageLocal(title, body, autoMs) {
     m.innerHTML = `${title ? `<div class="msgTitle">${title}</div>` : ''}<div class="msgBody">${body}</div><div class="msgNext">▼</div>`;
     m.classList.remove('hidden');
     m.classList.remove('pop'); void m.offsetWidth; m.classList.add('pop');
+    sfx(title && /衰尾/.test(title) ? 'curse' : 'msg');
     const seq = ++msgSeq;
     let t = null;
     const close = () => {
@@ -477,15 +480,16 @@ async function note(i, msg, kind) {
 }
 
 /* ---- 回合橫幅 ---- */
-function bannerLocal(html, color) {
+function bannerLocal(html, color, snd) {
   const b = $('#banner');
   b.innerHTML = `<div class="bInner">${html}</div>`;
   b.style.setProperty('--bc', color || '#e9b949');
   b.classList.remove('show'); void b.offsetWidth; b.classList.add('show');
+  sfx(snd || 'turn');
 }
-async function banner(html, color, ms) {
-  bannerLocal(html, color);
-  netSend({ t: 'banner', html, color });
+async function banner(html, color, ms, snd) {
+  bannerLocal(html, color, snd);
+  netSend({ t: 'banner', html, color, snd });
   await sleep(ms);
 }
 
@@ -498,7 +502,7 @@ function diceSpinLocal(n, text) {
   o.classList.add('spin');
   o.querySelector('.diceText').innerHTML = text || '';
   clearInterval(diceTimer);
-  const tick = () => { o.querySelector('.diceRow').innerHTML = Array.from({ length: n }, () => dieHTML(rint(1, 6))).join(''); };
+  const tick = () => { o.querySelector('.diceRow').innerHTML = Array.from({ length: n }, () => dieHTML(rint(1, 6))).join(''); sfx('tick'); };
   tick();
   diceTimer = setInterval(tick, 70);
 }
@@ -509,6 +513,7 @@ async function diceResultLocal(vals) {
   o.onclick = null;
   o.classList.remove('spin');
   o.querySelector('.diceRow').innerHTML = vals.map(dieHTML).join('');
+  sfx('dice');
   o.querySelector('.diceText').innerHTML = `前進 <b>${vals.reduce((a, b) => a + b, 0)}</b> 步！`;
   await sleep(950);
   o.classList.add('hidden');
@@ -529,11 +534,13 @@ async function rouletteLocal(finalName) {
   let delay = 45;
   for (let k = 0; k < 22; k++) {
     nameEl.textContent = names[(k * 7 + rint(0, names.length - 1)) % names.length];
+    sfx('rtick');
     await sleep(delay);
     delay *= 1.12;
   }
   nameEl.textContent = finalName + '站';
   o.classList.add('done');
+  sfx('ding');
   await sleep(1300);
   o.classList.add('hidden');
 }
@@ -548,11 +555,12 @@ async function roulette(node) {
 
 /* ================= 回合流程 ================= */
 async function gameLoop() {
+  bgmStart();
   render();
   setZoom(zoom);
   if (!S.introDone) {
     S.introDone = true;
-    await banner('<small>遊戲開始</small>寶島鐵道大亨', '#e9b949', 1400);
+    await banner('<small>遊戲開始</small>寶島鐵道大亨', '#e9b949', 1400, 'fanfare');
     await message('🚩 決定目的地', '大家從 <b>台北站</b> 出發！先用輪盤決定第一個目的地。', anyHuman() && NET.mode !== 'host' ? 0 : 1800);
     await roulette(S.goal);
   }
@@ -621,6 +629,7 @@ async function moveAlong(i, path, animate) {
     if (animate) {
       p.pos = path[k];
       renderTokens();
+      sfx('step');
       netSend({ t: 'pos', pos: S.players.map(q => q.pos), curse: S.curse, mover: i });
       if (zoom > 1.05) focusNode(p.pos);
     }
@@ -684,7 +693,7 @@ async function reachGoal(i) {
   log(`🎉 ${p.name} 第一個抵達${placeName(S.goal)}，獲得獎金 ${fmt(bonus)}`, 'goal');
   render();
   floatAll(p.pos, '+' + fmt(bonus), '#ffd54f');
-  await banner(`<small>抵達目的地</small>🎉 ${G.stationById[G.nodes[S.goal].sid].name}站`, p.color, 1300);
+  await banner(`<small>抵達目的地</small>🎉 ${G.stationById[G.nodes[S.goal].sid].name}站`, p.color, 1300, 'fanfare');
   await announce('🎉 抵達目的地！', `<b style="color:${p.color}">${p.name}</b> 第一個抵達 <b>${placeName(S.goal)}</b>！<br>獲得獎金 <b class="big">${fmt(bonus)}</b>`, p.cpu);
   const c = S.curse;
   if (c.holder === null || c.holder === i) {
@@ -718,7 +727,7 @@ async function curseTurn(i) {
     c.level = 2;
     render();
     log(`⛈️ 衰尾道人變身成大衰尾！`, 'bad');
-    await banner('<small>糟糕！</small>⛈️ 大衰尾登場', '#6a1b9a', 1300);
+    await banner('<small>糟糕！</small>⛈️ 大衰尾登場', '#6a1b9a', 1300, 'curse');
     await announce('⛈️ 衰尾道人變身了！', `跟著 <b>${p.name}</b> 太久，衰尾道人變成了<b class="big">「大衰尾」</b>！<br>災情會變得更嚴重……`, p.cpu);
     return;
   }
@@ -777,7 +786,7 @@ async function endMonth() {
   S.month = S.month === 12 ? 1 : S.month + 1;
   log(`📅 第${S.year}年 ${S.month}月`, 'month');
   render();
-  await banner(`<small>第${S.year}年</small>${S.month}月`, '#e9b949', 1000 * (anyHuman() ? 1 : spd()) + 100);
+  await banner(`<small>第${S.year}年</small>${S.month}月`, '#e9b949', 1000 * (anyHuman() ? 1 : spd()) + 100, 'month');
   await monthEvent();
 }
 
@@ -797,7 +806,7 @@ async function settlement() {
   rows.sort((a, b) => b.a - a.a);
   log(`💰 第${S.year}年度決算完成`, 'month');
   render();
-  await banner(`<small>3月</small>💰 年度決算`, '#e9b949', 1200);
+  await banner(`<small>3月</small>💰 年度決算`, '#e9b949', 1200, 'jingle');
   await showAll(`<h3>💰 第${S.year}年度 決算</h3>${rankBarsHTML(rows, true)}
     <p class="hint">物件收益 = 價格 × 收益率；獨佔車站的物件收益加倍。</p>`, NET.mode === 'host' ? 5000 : anyHuman() ? 0 : 2500);
 }
@@ -808,7 +817,7 @@ async function endGame() {
   const rows = S.players.map((p, i) => ({ p, a: assets(i) })).sort((a, b) => b.a - a.a);
   render();
   setStatus('遊戲結束');
-  await banner(`<small>遊戲結束</small>🏆 ${rows[0].p.name}`, rows[0].p.color, 1500);
+  await banner(`<small>遊戲結束</small>🏆 ${rows[0].p.name}`, rows[0].p.color, 1500, 'fanfare');
   const html = `<h3>🏆 遊戲結束</h3><p><b style="color:${rows[0].p.color}">${rows[0].p.name}</b> 成為寶島鐵道大亨！</p>${rankBarsHTML(rows, false)}`;
   NET.ended = true;
   netSend({ t: 'end', html });
@@ -857,7 +866,7 @@ async function monthEvent() {
   }
   log(`${title}`, 'month');
   render();
-  await banner(`<small>臨時新聞</small>${title}`, '#c62828', 1100);
+  await banner(`<small>臨時新聞</small>${title}`, '#c62828', 1100, 'news');
   await announce(title, body, false);
 }
 
@@ -1070,6 +1079,7 @@ function localChooseEnd(data) {
       const cur = path[path.length - 1], prev = path.length > 1 ? path[path.length - 2] : -1;
       if (!forwardOpts(cur, prev).includes(nb)) return;
       path.push(nb);
+      sfx('step');
       draw();
     };
     draw();
@@ -1336,10 +1346,15 @@ function init() {
   $('#goalInfo').onclick = () => { if (S) { if (zoom < 1.5) setZoom(2, S.goal); else focusNode(S.goal, true); } };
   $('#btnRules2').onclick = () => modal(RULES, [{ label: '了解', value: true, cls: 'primary' }]);
   $('#btnLog').onclick = () => $('#logDrawer').classList.toggle('hidden');
+  $('#btnSound').textContent = soundIcon();
+  $('#btnSound').onclick = () => { toggleMute(); $('#btnSound').textContent = soundIcon(); };
   $('#btnLogClose').onclick = () => $('#logDrawer').classList.add('hidden');
   $('#btnMenu').onclick = async () => {
     const v = await modal(`<h3>☰ 選單</h3><p class="hint">${NET.mode === 'host' ? '你是房主：離開會讓所有人的遊戲中斷。' : NET.mode === 'client' ? '離開後，用同樣的名字重新加入就能接回位置。' : '遊戲每回合開始時自動存檔，回到標題後可以「繼續上次」。'}</p>`,
-      [{ label: '📖 遊戲規則', value: 'rules' }, { label: '🏠 回到標題', value: 'title' }, { label: '取消', value: null, cls: 'primary' }]);
+      [{ label: `🎵 音樂：${SND.bgmOn ? '開' : '關'}`, value: 'bgm' }, { label: `🔔 音效：${SND.sfxOn ? '開' : '關'}`, value: 'sfx' },
+        { label: '📖 遊戲規則', value: 'rules' }, { label: '🏠 回到標題', value: 'title' }, { label: '取消', value: null, cls: 'primary' }]);
+    if (v === 'bgm') { toggleBgm(); toast(`🎵 背景音樂已${SND.bgmOn ? '開啟' : '關閉'}`); }
+    if (v === 'sfx') { toggleSfx(); toast(`🔔 音效已${SND.sfxOn ? '開啟' : '關閉'}`); }
     if (v === 'rules') modal(RULES, [{ label: '了解', value: true, cls: 'primary' }]);
     if (v === 'title') location.reload();
   };

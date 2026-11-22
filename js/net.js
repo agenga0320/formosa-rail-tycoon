@@ -218,6 +218,7 @@ function joinRoom() {
   const code = $('#joinCode').value.trim().toUpperCase();
   if (!/^[A-Z0-9]{4}$/.test(code)) { netError('請輸入 4 碼房間代碼'); return; }
   netError('');
+  audioInit();
   lockNetForm(true);
   $('#lobby').innerHTML = '<p class="hint">連線中…</p>';
   const name = myName();
@@ -277,7 +278,7 @@ function clientHandle(msg) {
     case 'state': {
       const first = !S;
       S = msg.S;
-      if (first) { $('#setup').classList.add('hidden'); applyZoom(); setStatusLocal('等待中…'); }
+      if (first) { $('#setup').classList.add('hidden'); applyZoom(); setStatusLocal('等待中…'); bgmStart(); }
       render();
       if (S.turn !== NET.lastTurn) { NET.lastTurn = S.turn; focusNode(S.players[S.turn].pos, !first); }
       break;
@@ -289,11 +290,12 @@ function clientHandle(msg) {
       msg.pos.forEach((n, k) => { S.players[k].pos = n; });
       S.curse = msg.curse;
       renderTokens();
+      sfx('step');
       if (zoom > 1.05) focusNode(msg.pos[msg.mover]);
       break;
     case 'banner':
       NET.justStepped = false;
-      bannerLocal(msg.html, msg.color);
+      bannerLocal(msg.html, msg.color, msg.snd);
       if (S) focusNode(S.players[S.turn].pos, true);
       break;
     case 'dice':
