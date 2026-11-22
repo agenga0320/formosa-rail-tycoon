@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1f3a5f">
+  <title>寶島鐵道大亨</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app">
+    <header id="topbar">
+      <div class="brand">🚂 寶島鐵道大亨</div>
+      <div class="when"><span id="date"></span><span id="remain"></span></div>
+      <button id="goalInfo" class="goal" type="button"></button>
+      <div class="topBtns">
+        <button id="btnRules" class="tbtn" type="button">規則</button>
+        <button id="btnMenu" class="tbtn" type="button">選單</button>
+      </div>
+    </header>
+    <main id="main">
+      <section id="mapArea">
+        <div id="mapWrap"><svg id="map" xmlns="http://www.w3.org/2000/svg"></svg></div>
+        <div class="zoomBtns">
+          <button id="zoomIn" type="button" aria-label="放大">＋</button>
+          <button id="zoomOut" type="button" aria-label="縮小">－</button>
+          <button id="zoomFocus" type="button" aria-label="回到目前玩家">◎</button>
+        </div>
+      </section>
+      <aside id="side">
+        <div id="players"></div>
+        <div id="actions"></div>
+        <div id="log"></div>
+      </aside>
+    </main>
+  </div>
+
+  <div id="modal" class="overlay hidden"><div class="box"></div></div>
+  <div id="toasts"></div>
+
+  <div id="setup" class="overlay hidden">
+    <div class="box setupBox">
+      <h1>🚂 寶島鐵道大亨</h1>
+      <p class="sub">搭火車環島、買下全台名產，成為台灣第一的鐵道大亨！</p>
+      <div id="pRows"></div>
+      <div class="opts">
+        <label>遊戲年數
+          <select id="years"><option value="1">1 年（試玩）</option><option value="3" selected>3 年</option><option value="5">5 年</option><option value="10">10 年</option><option value="20">20 年</option></select>
+        </label>
+        <label>電腦速度
+          <select id="speed"><option value="normal">普通</option><option value="fast">快</option></select>
+        </label>
+      </div>
+      <div id="setupErr" class="err"></div>
+      <div class="btns">
+        <button id="btnStart" class="btn primary" type="button">開始遊戲</button>
+        <button id="btnContinue" class="btn" type="button">繼續上次</button>
+        <button id="btnRules2" class="btn" type="button">遊戲規則</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/data.js"></script>
+  <script src="js/game.js"></script>
+</body>
+</html>
