@@ -351,34 +351,126 @@ function log(m, c) {
   if ($('#log')) renderLog();
 }
 
-/* ---- 鏡頭 ---- */
+/* ---- 鏡頭 ----
+ * 地圖四周留有一半螢幕寬高的空白（#mapPad），所以任何地點（包含最南、最北）
+ * 都能捲到畫面中央，不會被上方 HUD 或下方視窗擋住。 */
+
+/* 畫面上沒被 HUD／視窗擋住的區域（只計算橫跨大半個畫面的面板） */
+function visibleRect() {
+  const w = $('#mapWrap');
+  const W = w.clientWidth, H = w.clientHeight;
+  let top = $('#hudTop').getBoundingClientRect().bottom, bottom = H;
+  const pl = $('#players').getBoundingClientRect();
+  if (pl.width > W * 0.6) top = Math.max(top, pl.bottom);
+  for (const id of ['#cmd', '#msg']) {
+    const el = $(id);
+    if (el.classList.contains('hidden')) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width > W * 0.5) bottom = Math.min(bottom, r.top);
+  }
+  if (bottom - top < 140) { top = 0; bottom = H; }
+  return { top: top + 6, bottom: bottom - 6, left: 0, right: W };
+}
+
 function applyZoom() {
   const w = $('#mapWrap');
-  const fitW = Math.min(w.clientWidth, w.clientHeight * VW / VH);
-  const W = Math.max(100, fitW * zoom);
+  const W = w.clientWidth, H = w.clientHeight;
+  const vr = visibleRect();
+  const fitW = Math.min(W * 0.96, (vr.bottom - vr.top) * 0.96 * VW / VH);
+  const MW = Math.max(100, fitW * zoom);
   const svg = $('#map');
-  svg.style.width = W + 'px';
-  svg.style.height = (W * VH / VW) + 'px';
+  svg.style.width = MW + 'px';
+  svg.style.height = (MW * VH / VW) + 'px';
+  $('#mapPad').style.padding = `${Math.round(H / 2)}px ${Math.round(W / 2)}px`;
 }
-function focusNode(node, smooth) {
+
+/* 地圖在捲動內容中的位置（SVG 元素沒有 offsetLeft，所以用外圍留白計算） */
+function mapOffset() {
+  const pad = $('#mapPad');
+  return { x: parseFloat(pad.style.paddingLeft) || 0, y: parseFloat(pad.style.paddingTop) || 0 };
+}
+
+/* 把地圖座標 (x, y) 移到可見區域的中央 */
+function focusXY(x, y, smooth) {
   const w = $('#mapWrap'), svg = $('#map');
   const sc = parseFloat(svg.style.width) / VW;
-  const n = G.nodes[node];
-  if (!n) return;
-  const offX = Math.max(0, (w.clientWidth - parseFloat(svg.style.width)) / 2);
-  w.scrollTo({ left: n.x * sc + offX - w.clientWidth / 2, top: n.y * sc - w.clientHeight / 2, behavior: smooth ? 'smooth' : 'auto' });
+  const vr = visibleRect();
+  const off = mapOffset();
+  w.scrollTo({
+    left: off.x + x * sc - (vr.left + vr.right) / 2,
+    top: off.y + y * sc - (vr.top + vr.bottom) / 2,
+    behavior: smooth ? 'smooth' : 'auto',
+  });
 }
+function focusNode(node, smooth) {
+  const n = G.nodes[node];
+  if (n) focusXY(n.x, n.y, smooth);
+}
+const ISLAND_CENTER = [VW * 0.6, VH * 0.5];
+
+/* 以畫面上的某一點為中心縮放（滑鼠滾輪、雙指縮放用） */
+function zoomAt(z, cx, cy) {
+  const w = $('#mapWrap'), svg = $('#map');
+  const sc = parseFloat(svg.style.width) / VW;
+  const o1 = mapOffset();
+  const mx = (w.scrollLeft + cx - o1.x) / sc, my = (w.scrollTop + cy - o1.y) / sc;
+  zoom = Math.min(5, Math.max(1, z));
+  applyZoom();
+  const sc2 = parseFloat(svg.style.width) / VW;
+  const o2 = mapOffset();
+  w.scrollLeft = o2.x + mx * sc2 - cx;
+  w.scrollTop = o2.y + my * sc2 - cy;
+  $('#btnOverview').classList.toggle('on', zoom <= 1.05);
+  try { localStorage.setItem(ZOOM_KEY, String(zoom)); } catch (e) { /* ignore */ }
+}
+
 function setZoom(z, node) {
   zoom = Math.min(5, Math.max(1, z));
   try { localStorage.setItem(ZOOM_KEY, String(zoom)); } catch (e) { /* ignore */ }
   applyZoom();
+  $('#btnOverview').classList.toggle('on', zoom <= 1.05);
   if (S) focusNode(node != null ? node : S.players[S.turn].pos);
 }
 function toggleOverview() {
   if (!S) return;
-  if (zoom > 1.05) { prevZoom = zoom; zoom = 1; applyZoom(); }
+  if (zoom > 1.05) { prevZoom = zoom; zoom = 1; applyZoom(); focusXY(ISLAND_CENTER[0], ISLAND_CENTER[1]); }
   else { zoom = prevZoom || (innerWidth < 820 ? 2.6 : 2.0); applyZoom(); focusNode(S.players[S.turn].pos); }
   $('#btnOverview').classList.toggle('on', zoom <= 1.05);
+}
+
+/* 滑鼠拖曳平移、滾輪縮放、手機雙指縮放 */
+let dragMoved = false;
+function setupMapGestures() {
+  const w = $('#mapWrap');
+  let drag = null;
+  w.addEventListener('pointerdown', e => {
+    if (e.pointerType !== 'mouse' || e.button !== 0) return;
+    drag = { x: e.clientX, y: e.clientY, sl: w.scrollLeft, st: w.scrollTop };
+    dragMoved = false;
+  });
+  window.addEventListener('pointermove', e => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (!dragMoved && Math.abs(dx) + Math.abs(dy) > 6) { dragMoved = true; w.classList.add('dragging'); }
+    if (dragMoved) { w.scrollLeft = drag.sl - dx; w.scrollTop = drag.st - dy; }
+  });
+  window.addEventListener('pointerup', () => { drag = null; w.classList.remove('dragging'); });
+  w.addEventListener('wheel', e => {
+    e.preventDefault();
+    zoomAt(zoom * (e.deltaY < 0 ? 1.12 : 1 / 1.12), e.clientX, e.clientY);
+  }, { passive: false });
+  let pinch = null;
+  const tdist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  w.addEventListener('touchstart', e => {
+    if (e.touches.length === 2) pinch = { d: tdist(e.touches), z: zoom };
+  }, { passive: true });
+  w.addEventListener('touchmove', e => {
+    if (!pinch || e.touches.length !== 2) return;
+    e.preventDefault();
+    const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2, cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+    zoomAt(pinch.z * tdist(e.touches) / pinch.d, cx, cy);
+  }, { passive: false });
+  w.addEventListener('touchend', e => { if (e.touches.length < 2) pinch = null; });
 }
 
 /* ================= 介面元件 ================= */
@@ -979,9 +1071,8 @@ async function localAsk(kind, data) {
 /* 指令視窗 */
 async function localMenu(i) {
   const p = S.players[i];
-  focusNode(p.pos, true);
   for (;;) {
-    const v = await setActions(
+    const pr = setActions(
       `<span class="dot" style="background:${p.color}"></span>${p.name}<small>距目的地 ${dist(p.pos, S.goal)} 格</small>`,
       [{ label: '🎲 擲骰子', value: 'roll', cls: 'primary' },
         { label: `🃏 卡片 <small>${p.cards.length}</small>`, value: 'cards', disabled: !p.cards.length },
@@ -989,6 +1080,8 @@ async function localMenu(i) {
         { label: '🚩 看目的地', value: 'goal' },
         { label: `${twIcon(17)} 全國地圖`, value: 'map' },
         { label: '📊 排行榜', value: 'rank' }]);
+    if (zoom > 1.05) focusNode(p.pos, true);
+    const v = await pr;
     if (v === 'roll') { await diceWaitTap(1); return { type: 'roll' }; }
     if (v === 'props') { await showProps(i); continue; }
     if (v === 'rank') { await showRanking(); continue; }
@@ -1005,15 +1098,20 @@ async function localMenu(i) {
 }
 
 async function viewNode(node, title) {
+  const pr = setActions(title, [{ label: '↩ 返回', value: 1, cls: 'primary' }]);
   focusNode(node, true);
-  await setActions(title, [{ label: '↩ 返回', value: 1, cls: 'primary' }]);
+  await pr;
   focusNode(S.players[S.turn].pos, true);
 }
 async function viewOverview() {
   const z = zoom;
+  const pr = setActions(`${twIcon(18)} 全國地圖`, [{ label: '↩ 返回', value: 1, cls: 'primary' }]);
   zoom = 1; applyZoom();
-  await setActions(`${twIcon(18)} 全國地圖`, [{ label: '↩ 返回', value: 1, cls: 'primary' }]);
+  focusXY(ISLAND_CENTER[0], ISLAND_CENTER[1]);
+  $('#btnOverview').classList.add('on');
+  await pr;
   zoom = z; applyZoom();
+  $('#btnOverview').classList.toggle('on', zoom <= 1.05);
   focusNode(S.players[S.turn].pos);
 }
 
@@ -1042,7 +1140,6 @@ function localChooseEnd(data) {
       p.pos = cur;
       renderTokens();
       if (NET.mode === 'host') netSend({ t: 'pos', pos: S.players.map(q => q.pos), curse: S.curse, mover: i });
-      focusNode(cur);
       if (left <= 0 || (cur === S.goal && path.length > 1)) { setTimeout(() => finish(path.slice()), 250); }
       let h = '';
       for (const [node] of ends) {
@@ -1063,9 +1160,10 @@ function localChooseEnd(data) {
       $('#lyHL').innerHTML = h;
       cmd.className = 'win stepWin';
       cmd.innerHTML = `<div class="cmdTitle"><span class="dot" style="background:${p.color}"></span>剩下 <b class="left">${Math.max(0, left)}</b> 步</div>
-        <div class="hint">點 <b>箭頭</b> 一步一步前進，或直接點 <b>閃爍的圈</b> 停在那裡</div>
+        <div class="hint">點 <b>箭頭</b> 前進，或點 <b>閃爍的圈</b> 直接停</div>
         <div class="cmdList"><button class="cmdBtn" id="btnUndo" type="button" ${path.length <= 1 ? 'disabled' : ''}>↩ 退一步</button></div>`;
       cmd.classList.remove('hidden');
+      if (zoom > 1.05 || path.length === 1) focusNode(cur, path.length === 1);
       $('#btnUndo').onclick = () => { if (path.length > 1 && !finished) { path.pop(); draw(); } };
     };
     stepClick = el => {
@@ -1337,7 +1435,8 @@ function init() {
   buildGraph();
   buildMapSVG();
   try { const z = parseFloat(localStorage.getItem(ZOOM_KEY)); if (z >= 1 && z <= 5) zoom = z; } catch (e) { /* ignore */ }
-  window.addEventListener('resize', () => { if (S) applyZoom(); });
+  window.addEventListener('resize', () => { if (S) { applyZoom(); focusNode(S.players[S.turn].pos); } });
+  setupMapGestures();
   $('#zoomIn').onclick = () => setZoom(zoom * 1.25);
   $('#zoomOut').onclick = () => setZoom(zoom / 1.25);
   $('#zoomFocus').onclick = () => S && focusNode(S.players[S.turn].pos, true);
@@ -1359,6 +1458,7 @@ function init() {
     if (v === 'title') location.reload();
   };
   $('#map').addEventListener('click', e => {
+    if (dragMoved) { dragMoved = false; return; }
     const stepEl = e.target.closest('[data-step],[data-end]');
     if (stepEl) {
       if (stepClick) stepClick(stepEl);
