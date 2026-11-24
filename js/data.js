@@ -105,11 +105,59 @@ const CARDS = {
   limited:   { name: '自強號卡', kind: 'move', dice: 3, price: 1500, desc: '擲 3 顆骰子前進' },
   hsr:       { name: '高鐵卡',   kind: 'move', dice: 4, price: 6000, desc: '擲 4 顆骰子前進' },
   warp:      { name: '瞬移卡',   kind: 'warp', price: 800,  desc: '隨機傳送到某個車站' },
-  near:      { name: '導航卡',   kind: 'near', price: 0,    desc: '傳送到目的地附近 1～3 格內' },
+  near:      { name: '導航卡',   kind: 'near', price: 0,    desc: '傳送到目的地附近 1～3 格；離島目的地則傳送至可前往該島的本島交通站' },
   stop:      { name: '停駛卡',   kind: 'stop', price: 1200, desc: '指定一名對手，下回合無法行動' },
   charm:     { name: '平安符',   kind: 'charm', price: 3000, desc: '趕走纏在身上的衰尾道人' },
   redpacket: { name: '紅包卡',   kind: 'red',  price: 0,    desc: '收到一筆紅包（年份越後面越多）' },
+  acquire:   { name: '收購卡', kind: 'acquire', price: 2000, desc: '擲骰前，以原價 2 倍收購目前車站的一項對手物件，款項交給原持有人' },
   tax:       { name: '查稅卡',   kind: 'tax',  price: 0,    desc: '向現金最多的對手收取其現金 10%' },
 };
-const SHOP_CARDS = ['express', 'limited', 'hsr', 'warp', 'stop', 'charm'];
-const DRAW_WEIGHTS = { express: 28, limited: 14, hsr: 4, warp: 10, near: 4, stop: 10, charm: 8, redpacket: 14, tax: 8 };
+const SHOP_CARDS = ['express', 'limited', 'hsr', 'warp', 'stop', 'charm', 'acquire'];
+const DRAW_WEIGHTS = { express: 28, limited: 14, hsr: 4, warp: 10, near: 4, stop: 10, charm: 8, redpacket: 14, tax: 8, acquire: 6 };
+
+/* 遊戲機場：在對應車站辦理搭機，不代表現實航班。票價單位為萬元。 */
+const AIRPORTS = ['taipei', 'taoyuan', 'taichung', 'kaohsiung', 'hualien', 'taitung'];
+const FLIGHT_BASE_FARE = 1500;
+const FLIGHT_FARE_PER_TILE = 80;
+
+/* 遊戲港口間提供直達航線，非現實客輪班表。票價單位為萬元。 */
+const PORTS = ['keelung', 'suao', 'hualien', 'taichung', 'kaohsiung'];
+const BOAT_BASE_FARE = 800;
+const BOAT_FARE_PER_TILE = 40;
+
+/* 離島採分區示意圖，每島僅一站；交通資料來源見 docs/island-transport.md。 */
+const ISLANDS = [
+  { id: 'penghu', name: '澎湖', x: 100, y: 780, spot: '西嶼', goods: ['仙人掌冰', '海景民宿'], specialty: '玄武岩導覽' },
+  { id: 'kinmen', name: '金門', x: 100, y: 470, spot: '金城', goods: ['貢糖老店', '高粱酒坊'], specialty: '閩式古厝民宿' },
+  { id: 'matsu', name: '馬祖', x: 100, y: 180, spot: '南竿', goods: ['繼光餅', '老酒工坊'], specialty: '藍眼淚導覽' },
+  { id: 'greenisland', name: '綠島', x: 1020, y: 1160, spot: '朝日溫泉', goods: ['海草冰', '潛水中心'], specialty: '海底溫泉' },
+  { id: 'lanyu', name: '蘭嶼', x: 1020, y: 1430, spot: '紅頭', goods: ['飛魚料理', '島嶼民宿'], specialty: '部落文化導覽' },
+  { id: 'liuqiu', name: '小琉球', x: 100, y: 1330, spot: '花瓶岩', goods: ['麻花捲', '浮潛中心'], specialty: '潮間帶導覽' },
+];
+const ISLAND_STAY_INCOME = 500;
+for (const island of ISLANDS) {
+  STATIONS.push({ id: island.id, name: island.name, island: island.id, lab: 't', mapX: island.x, mapY: island.y,
+    props: [[island.goods[0], 1500, 40, 'food'], [island.goods[1], 6000, 18, 'tour'], [island.specialty, 4000, 20, 'tour']] });
+}
+// [出發站, 抵達站, 計費距離, 實際交通端點]；雙向，票價仍採遊戲經濟。
+const ISLAND_AIRPORT_NAMES = { taipei:'台北松山', taichung:'台中清泉崗', chiayi:'嘉義', tainan:'台南', kaohsiung:'高雄小港' };
+const ISLAND_FLIGHTS = [
+  ...['taipei','taichung','chiayi','tainan','kaohsiung'].map(s => [s,'penghu',22,`${ISLAND_AIRPORT_NAMES[s]}機場 ↔ 澎湖機場`]),
+  ...['taipei','taichung','chiayi','tainan','kaohsiung'].map(s => [s,'kinmen',28,`${ISLAND_AIRPORT_NAMES[s]}機場 ↔ 金門尚義機場`]),
+  ...['taipei','taichung','kaohsiung'].map(s => [s,'matsu',26,`${ISLAND_AIRPORT_NAMES[s]}機場 ↔ 馬祖南竿機場`]),
+  ['taitung','greenisland',8,'台東豐年機場 ↔ 綠島機場'],
+  ['taitung','lanyu',12,'台東豐年機場 ↔ 蘭嶼機場'],
+];
+const ISLAND_BOATS = [
+  ['chiayi','penghu',22,'嘉義轉乘布袋港 ↔ 澎湖馬公港'],
+  ['kaohsiung','penghu',30,'高雄港 ↔ 澎湖馬公港'],
+  ['keelung','matsu',36,'基隆港 ↔ 馬祖南竿福澳港'],
+  ['taitung','greenisland',8,'台東轉乘富岡漁港 ↔ 綠島南寮漁港'],
+  ['taitung','lanyu',12,'台東轉乘富岡漁港 ↔ 蘭嶼開元港'],
+  ['kenting','lanyu',12,'墾丁轉乘後壁湖 ↔ 蘭嶼開元港'],
+  ['pingtung','liuqiu',5,'屏東轉乘東港碼頭 ↔ 小琉球白沙港'],
+];
+// 保留原有本島遊戲航線；離島不參與任意兩站互通。
+const MAINLAND_AIRPORTS = [...AIRPORTS], MAINLAND_PORTS = [...PORTS];
+for (const [a,b] of ISLAND_FLIGHTS) for (const sid of [a,b]) if (!AIRPORTS.includes(sid)) AIRPORTS.push(sid);
+for (const [a,b] of ISLAND_BOATS) for (const sid of [a,b]) if (!PORTS.includes(sid)) PORTS.push(sid);

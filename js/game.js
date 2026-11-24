@@ -4,8 +4,8 @@
  * → 用箭頭一步一步前進（顯示剩餘步數）→ 到站事件 → 訊息視窗
  */
 
-const VW = 880, VH = 1560;
-const px = lon => (lon - 119.85) * 400;
+const VW = 1160, VH = 1560;
+const px = lon => (lon - 119.85) * 400 + 240;
 const py = lat => (25.4 - lat) * 437;
 const COLORS = ['#e53935', '#1e6fd9', '#2e9d4a', '#f08c00'];
 const OFFS = [[-9, -9], [9, -9], [-9, 9], [9, 9]];
@@ -55,7 +55,7 @@ function mulberry32(a) {
 }
 
 function buildGraph() {
-  STATIONS.forEach(s => {
+  STATIONS.filter(s => !s.island).forEach(s => {
     const id = G.nodes.length;
     G.nodes.push({ id, type: 'station', sid: s.id, x: px(s.lon), y: py(s.lat) });
     G.adj.push([]);
@@ -80,11 +80,49 @@ function buildGraph() {
     }
     link(prev, B.id, opt && opt.bus);
   });
+  // Append new nodes after the original 117 nodes so existing saves keep their positions.
+  for (const island of ISLANDS) {
+    const stops = STATIONS.filter(s => s.island === island.id);
+    for (const stop of stops) {
+      const id = G.nodes.length;
+      G.nodes.push({ id, type: 'station', sid: stop.id, island: island.id, x: stop.mapX, y: stop.mapY });
+      G.adj.push([]); G.stationNode[stop.id] = id; G.stationById[stop.id] = stop;
+    }
+  }
+  layoutCoastLine();
   G.near = G.nodes.map(n => n.type === 'station' ? n.sid : null);
   const q = G.nodes.filter(n => n.type === 'station').map(n => n.id);
   while (q.length) {
     const u = q.shift();
     for (const v of G.adj[u]) if (!G.near[v]) { G.near[v] = G.near[u]; q.push(v); }
+  }
+}
+
+// Display-only routing: keep node IDs, tile types and travel distances compatible with saves.
+function layoutCoastLine() {
+  const dajia = G.nodes[G.stationNode.dajia];
+  dajia.x -= 48;
+  for (const [from, to] of [['changhua', 'dajia'], ['dajia', 'zhunan']]) {
+    const start = G.stationNode[from], end = G.stationNode[to];
+    // These two coastal segments contain only degree-two intermediate tiles.
+    // Follow each candidate until its next station to identify the coastal segment.
+    let route;
+    for (const first of G.adj[start]) {
+      const candidate = [start, first];
+      let prev = start, cur = first;
+      while (G.nodes[cur].type !== 'station') {
+        const next = G.adj[cur].find(id => id !== prev);
+        prev = cur; cur = next; candidate.push(cur);
+      }
+      if (cur === end) { route = candidate; break; }
+    }
+    const a = G.nodes[start], b = G.nodes[end];
+    route.forEach((id, i) => {
+      if (!i || i === route.length - 1) return;
+      const t = i / (route.length - 1);
+      G.nodes[id].x = a.x + (b.x - a.x) * t - 42 * Math.sin(Math.PI * t);
+      G.nodes[id].y = a.y + (b.y - a.y) * t;
+    });
   }
 }
 
@@ -101,7 +139,29 @@ function distFrom(src) {
   distCache.set(src, d);
   return d;
 }
-const dist = (a, b) => distFrom(a)[b];
+// Walking/rail reachability stays separate: tickets are never dice edges.
+const travelCache = new Map();
+function travelDistances(src) {
+  if (travelCache.has(src)) return travelCache.get(src);
+  const d = G.nodes.map(() => Infinity), visited = new Set(); d[src] = 0;
+  while (visited.size < G.nodes.length) {
+    let u = -1;
+    for (let i = 0; i < d.length; i++) if (!visited.has(i) && (u < 0 || d[i] < d[u])) u = i;
+    if (u < 0 || !Number.isFinite(d[u])) break;
+    visited.add(u);
+    const edges = G.adj[u].map(v => [v,1]);
+    for (const [a,b] of [...ISLAND_FLIGHTS,...ISLAND_BOATS]) {
+      const x=G.stationNode[a], y=G.stationNode[b];
+      if (u===x) edges.push([y,8]); else if (u===y) edges.push([x,8]);
+    }
+    for (const [v,cost] of edges) d[v] = Math.min(d[v],d[u]+cost);
+  }
+  travelCache.set(src,d); return d;
+}
+const dist = (a,b) => Number.isFinite(distFrom(a)[b]) ? distFrom(a)[b] : travelDistances(a)[b];
+function distanceLabel(a,b) {
+  return Number.isFinite(distFrom(a)[b]) ? `${distFrom(a)[b]} 格` : `需轉乘・估算 ${dist(a,b)} 格`;
+}
 
 /* 往前可走的方向：不能立刻折返（死路除外） */
 function forwardOpts(cur, prev) {
@@ -238,6 +298,11 @@ function buildMapSVG() {
   const pts = COAST.map(([lo, la]) => px(lo).toFixed(1) + ',' + py(la).toFixed(1)).join(' ');
   h += `<polygon class="landShadow" points="${pts}" transform="translate(6 8)"/><polygon class="land" points="${pts}"/>`;
   h += `<text x="60" y="1480" class="seaText">台灣海峽</text><text x="${VW - 70}" y="900" class="seaText" text-anchor="end">太平洋</text>`;
+  for (const island of ISLANDS) {
+    h += `<g class="islandInset"><rect x="${island.x-88}" y="${island.y-65}" width="176" height="140" rx="20"/>
+      <path class="land" d="M ${island.x-20},${island.y-47} Q ${island.x+78},${island.y-40} ${island.x+65},${island.y+18} Q ${island.x+22},${island.y+55} ${island.x-62},${island.y+32} Q ${island.x-76},${island.y-22} ${island.x-20},${island.y-47} Z"/>
+      <text x="${island.x}" y="${island.y+64}" text-anchor="middle">離島單站・須購票進出</text></g>`;
+  }
   G.edges.forEach(([u, v, bus]) => {
     const a = G.nodes[u], b = G.nodes[v];
     h += `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" class="railBed${bus ? ' bus' : ''}"/>`;
@@ -263,7 +328,7 @@ function buildMapSVG() {
     else { lx = n.x + 20; anchor = 'start'; }
     h += `<g class="st${s.shop ? ' shop' : ''}" data-node="${n.id}">
       <rect x="${n.x - 14}" y="${n.y - 14}" width="28" height="28" rx="6"/>
-      <text x="${lx}" y="${ly}" text-anchor="${anchor}">${s.name}</text></g>`;
+      <text x="${lx}" y="${ly}" text-anchor="${anchor}">${s.name}${AIRPORTS.includes(s.id) ? ' ✈' : ''}${PORTS.includes(s.id) ? ' ⚓' : ''}</text></g>`;
   });
   h += '<g id="lyOwn"></g><g id="lyGoal"></g><g id="lyHL"></g><g id="lyTok"></g><g id="lyFx"></g>';
   svg.innerHTML = h;
@@ -330,9 +395,9 @@ function renderTop() {
 function renderPlayers() {
   $('#players').innerHTML = S.players.map((p, i) => `
     <div class="pcard${i === S.turn ? ' cur' : ''}" data-p="${i}" style="--pc:${p.color}">
-      <div class="pTop"><span class="chip">${i + 1}</span><b class="pName">${p.name}</b>${isMine(i) ? '<small class="you">你</small>' : ''}<span class="pIcons">${S.curse.holder === i ? (S.curse.level > 1 ? '⛈️' : '🌧️') : ''}${p.skip ? '⛔' : ''}${p.offline ? '📴' : p.cpu ? '🤖' : p.peer && !isMine(i) ? '🌐' : ''}</span></div>
+      <div class="pTop"><span class="chip">${i + 1}</span><b class="pName">${p.name}</b>${isMine(i) ? '<small class="you">你</small>' : ''}<span class="pIcons">${S.curse.holder === i ? (S.curse.level > 1 ? '⛈️' : '🌧️') : ''}${p.skip ? '⛔' : ''}${p.boatRest ? '<span title="搭船後下回合暫停">🚢⏸</span>' : ''}${p.offline ? '📴' : p.cpu ? '🤖' : p.peer && !isMine(i) ? '🌐' : ''}</span></div>
       <div class="pMoney ${p.cash < 0 ? 'neg' : ''}">${fmt(p.cash)}</div>
-      <div class="pSub">資產 ${fmt(assets(i))}・🃏${p.cards.length}・距 ${dist(p.pos, S.goal)} 格</div>
+      <div class="pSub">資產 ${fmt(assets(i))}・🃏${p.cards.length}・距 ${distanceLabel(p.pos, S.goal)}</div>
     </div>`).join('');
 }
 
@@ -406,7 +471,7 @@ function focusNode(node, smooth) {
   const n = G.nodes[node];
   if (n) focusXY(n.x, n.y, smooth);
 }
-const ISLAND_CENTER = [VW * 0.6, VH * 0.5];
+const ISLAND_CENTER = [VW * 0.5, VH * 0.5];
 
 /* 以畫面上的某一點為中心縮放（滑鼠滾輪、雙指縮放用） */
 function zoomAt(z, cx, cy) {
@@ -645,9 +710,54 @@ async function roulette(node) {
   await sleep(500);
 }
 
+/* ================= 負債與收購 ================= */
+function debtOptions(i) {
+  return ownedKeys(i).map(key => {
+    const pr = propOf(key), sid = key.split(':')[0];
+    return { key, name: pr[0], station: G.stationById[sid].name, sale: Math.floor(pr[1] / 2), income: pr[1] * pr[2] / 100, monopoly: monoOwner(sid) === i };
+  }).sort((a,b) => a.income - b.income || a.sale - b.sale || a.key.localeCompare(b.key));
+}
+async function settleDebt(i) {
+  const p = S.players[i];
+  while (p.cash < 0) {
+    const options = debtOptions(i);
+    if (!options.length) break;
+    render(); // Send the current debt and ownership to a remote player before asking.
+    const chosen = p.cpu || p.offline ? null : await ask(i, 'debt', { i });
+    const sale = options.find(o => o.key === chosen) || options[0];
+    // Only the authoritative game changes ownership and computes the sale value.
+    if (S.owner[sale.key] !== i) continue;
+    delete S.owner[sale.key];
+    p.cash += sale.sale;
+    log(`🏦 ${p.name} 變賣${sale.station}「${sale.name}」，半價取得 ${fmt(sale.sale)}；${p.cash < 0 ? '仍欠 ' + fmt(-p.cash) : '現金 ' + fmt(p.cash)}。物件重新開放購買`, 'bad');
+    render();
+  }
+}
+async function settleAllDebts() {
+  for (let i = 0; i < S.players.length; i++) await settleDebt(i);
+}
+function chooseDebtSale(i) {
+  const p = S.players[i];
+  return modal(`<h3>🏦 選擇變賣物件</h3><p>目前負債：<b class="neg">${fmt(-p.cash)}</b></p>
+    <p class="hint flightIntro">選擇一項物件以原價一半變賣。還清後立即停止；若仍負債，繼續選擇。售出物件重新開放所有人購買。賣完仍不足則保留負債。</p>`,
+    debtOptions(i).map(o => ({label:`<span class="flightRow"><span><b>${o.station}・${o.name}</b><small>基礎年收益 ${fmt(o.income)}${o.monopoly ? '・出售將失去獨佔加倍' : ''}</small><small>售後${p.cash + o.sale < 0 ? '仍欠 ' + fmt(-p.cash-o.sale) : '現金 ' + fmt(p.cash+o.sale)}</small></span><b>變賣 ${fmt(o.sale)}</b></span>`,value:o.key})));
+}
+function acquisitionOptions(i) {
+  const s = stationOf(S.players[i].pos);
+  if (!s) return [];
+  return s.props.map((pr,k) => ({key:s.id+':'+k, name:pr[0], owner:S.owner[s.id+':'+k], price:pr[1]*2, income:pr[1]*pr[2]/100}))
+    .filter(o => Number.isInteger(o.owner) && o.owner !== i && S.players[o.owner]);
+}
+function chooseAcquisition(i) {
+  const p = S.players[i], options = acquisitionOptions(i);
+  return modal(`<h3>🤝 收購對手物件</h3><p>現金：<b>${fmt(p.cash)}</b></p><p class="hint flightIntro">收購目前車站的一項對手物件，支付原價 2 倍給原持有人，並消耗一張收購卡。收購後仍可擲骰或搭乘交通工具。${options.length ? '' : '本站目前沒有可收購物件。'}</p>`,
+    [...options.map(o=>({label:`<span class="flightRow"><span><b>${o.name}</b><small>持有人：${S.players[o.owner].name}${p.cash < o.price ? '・現金不足' : ''}</small></span><b>收購 ${fmt(o.price)}</b></span>`,value:o.key,disabled:p.cash<o.price})),{label:'取消',value:null}]);
+}
+
 /* ================= 回合流程 ================= */
 async function gameLoop() {
   bgmStart();
+  await settleAllDebts();
   render();
   setZoom(zoom);
   if (!S.introDone) {
@@ -670,23 +780,34 @@ async function gameLoop() {
 
 async function playTurn(i) {
   const p = S.players[i];
+  await settleDebt(i);
   render();
   focusNode(p.pos, true);
   log(`▶ ${p.name} 的回合`, 'turn');
   await banner(`<small>第${S.year}年 ${S.month}月</small>${p.name} 的回合`, p.color, p.cpu ? 900 * spd() + 200 : 1100);
-  if (p.skip) {
+  if (p.skip || p.boatRest) {
+    const resting = p.boatRest;
     p.skip = false;
-    await note(i, `⛔ ${p.name} 停駛中，這回合無法前進`, 'bad');
+    p.boatRest = false;
+    render();
+    await note(i, resting ? `🚢 ${p.name} 搭船後休息，這回合暫停，下回合恢復行動` : `⛔ ${p.name} 停駛中，這回合無法前進`, 'bad');
     return;
   }
   const act = p.cpu ? await cpuPreRoll(i) : await humanPreRoll(i);
   render();
-  if (act.type === 'warp') {
+  if (act.type === 'stay' && G.nodes[p.pos].island) {
+    p.cash += ISLAND_STAY_INCOME;
+    render();
+    floatAll(p.pos, '+' + fmt(ISLAND_STAY_INCOME), '#7fd3ff');
+    await note(i, `🏝️ ${p.name} 留島經營，獲得 ${fmt(ISLAND_STAY_INCOME)}`, 'good');
+  } else if (act.type === 'warp' || act.type === 'flight' || act.type === 'boat') {
     p.pos = act.node;
+    if (act.type === 'boat') p.boatRest = true;
     render();
     focusNode(p.pos, true);
-    floatAll(p.pos, '✨', '#fff');
-    await note(i, `✨ ${p.name} 瞬間移動到了 ${placeName(act.node)}`, 'good');
+    const transport = act.type === 'flight' ? { icon: '✈️', verb: '搭機' } : act.type === 'boat' ? { icon: '🚢', verb: '搭船' } : null;
+    floatAll(p.pos, transport ? transport.icon : '✨', '#fff');
+    await note(i, transport ? `${transport.icon} ${p.name} ${transport.verb}抵達 ${placeName(act.node)}（票價 ${fmt(act.fare)}）${act.type === 'boat' ? '，下一回合暫停一次' : ''}` : `✨ ${p.name} 瞬間移動到了 ${placeName(act.node)}`, 'good');
   } else {
     const total = await rollDice(act.dice);
     const ends = reachable(p.pos, total);
@@ -754,6 +875,7 @@ async function landOn(i) {
   } else if (n.type === 'red') {
     const l = r10(rint(200, 1200) * yf());
     p.cash -= l;
+    await settleDebt(i);
     floatAll(p.pos, '-' + fmt(l), '#ff8a80');
     await note(i, `🔴 ${p.name} 停在紅色格，損失 ${fmt(l)}`, 'bad');
   } else if (n.type === 'yellow') {
@@ -830,6 +952,7 @@ async function curseTurn(i) {
     if (r < 0.45) {
       const l = r10(rint(200, 900) * y);
       p.cash -= l;
+      await settleDebt(i);
       floatAll(p.pos, '-' + fmt(l), '#ff8a80');
       msg = pick([`衰尾道人拿你的錢去買刮刮樂，全部槓龜，花掉 ${fmt(l)}`,
         `衰尾道人在夜市狂吃，帳單 ${fmt(l)} 算你的`,
@@ -851,6 +974,7 @@ async function curseTurn(i) {
     if (r < 0.45) {
       const l = r10(rint(3000, 12000) * y);
       p.cash -= l;
+      await settleDebt(i);
       floatAll(p.pos, '-' + fmt(l), '#ff8a80');
       msg = `大衰尾開了一家注定倒閉的公司，賠掉 <b>${fmt(l)}</b>！`;
     } else if (r < 0.75 && keys.length) {
@@ -895,6 +1019,7 @@ function rankBarsHTML(rows, showInc) {
 }
 
 async function settlement() {
+  await settleAllDebts();
   const rows = S.players.map((p, i) => { const inc = incomeOf(i); p.cash += inc; return { p, i, inc, a: assets(i) }; });
   rows.sort((a, b) => b.a - a.a);
   log(`💰 第${S.year}年度決算完成`, 'month');
@@ -905,6 +1030,7 @@ async function settlement() {
 }
 
 async function endGame() {
+  await settleAllDebts();
   S.over = true;
   clearSave();
   const rows = S.players.map((p, i) => ({ p, a: assets(i) })).sort((a, b) => b.a - a.a);
@@ -958,17 +1084,105 @@ async function monthEvent() {
     body = ev.txt + '<br>' + (lines.join('<br>') || `可惜沒有人擁有${TYPE_NAME[ev.type]}物件……`);
   }
   log(`${title}`, 'month');
+  await settleAllDebts();
   render();
   await banner(`<small>臨時新聞</small>${title}`, '#c62828', 1100, 'news');
   await announce(title, body, false);
 }
 
+/* ================= 機場 ================= */
+function airportAt(node) {
+  const sid = G.nodes[node]?.sid;
+  return AIRPORTS.includes(sid) ? sid : null;
+}
+
+function transportOptions(i, kind) {
+  const p = S.players[i], sid = G.nodes[p.pos].sid;
+  const flying = kind === 'flight';
+  const legacy = flying ? MAINLAND_AIRPORTS : MAINLAND_PORTS;
+  const routes = flying ? ISLAND_FLIGHTS : ISLAND_BOATS;
+  const choices = legacy.includes(sid) ? legacy.filter(s => s !== sid).map(s => ({node:G.stationNode[s], units:distFrom(p.pos)[G.stationNode[s]], detail:'本島遊戲航線'})) : [];
+  for (const [a,b,units,detail] of routes) {
+    if (sid===a || sid===b) choices.push({node:G.stationNode[sid===a?b:a],units,detail});
+  }
+  return choices.map(f => ({...f, fare:Math.ceil(((flying?FLIGHT_BASE_FARE:BOAT_BASE_FARE)+f.units*(flying?FLIGHT_FARE_PER_TILE:BOAT_FARE_PER_TILE))/100)*100, remaining:dist(f.node,S.goal)}))
+    .sort((a,b)=>a.remaining-b.remaining || a.fare-b.fare);
+}
+function flightOptions(i) { return transportOptions(i,'flight'); }
+
+// The host recomputes the fare and validates the departure, destination and cash.
+function bookFlight(i, node) {
+  const p = S.players[i];
+  if (p.skip || p.boatRest) return null;
+  const flight = flightOptions(i).find(f => f.node === node);
+  if (!flight || p.cash < flight.fare) return null;
+  p.cash -= flight.fare;
+  log(`✈️ ${p.name} 購票：${placeName(p.pos)} → ${placeName(node)}，票價 ${fmt(flight.fare)}`);
+  return { type: 'flight', node, fare: flight.fare };
+}
+
+async function chooseFlight(i) {
+  const p = S.players[i];
+  if (!airportAt(p.pos)) {
+    await modal(`<h3>✈️ 機場</h3><p>請先停在有 ✈ 標記的機場車站，下回合擲骰前即可搭機。</p>
+      <div class="cards">${AIRPORTS.map(sid => `<div class="cardRow"><b>${G.stationById[sid].name}機場</b><span>距目前 ${distanceLabel(p.pos, G.stationNode[sid])}</span></div>`).join('')}</div>`, [{ label: '返回', value: null }]);
+    return null;
+  }
+  const options = flightOptions(i);
+  return modal(`<h3>✈️ ${G.stationById[airportAt(p.pos)].name}機場</h3>
+    <p>現金：<b>${fmt(p.cash)}</b></p><p class="hint flightIntro">搭機取代本回合擲骰，抵達後可購買物件、領取目的地獎勵。票價：基本 ${fmt(FLIGHT_BASE_FARE)}＋每計費格 ${fmt(FLIGHT_FARE_PER_TILE)}，向上取整至百萬。離島採航線計費距離，車站至機場／碼頭接駁已包含。</p>
+    `,
+    [...options.map(f => ({ label: `<span class="flightRow"><span><b>飛往${G.stationById[G.nodes[f.node].sid].name}</b><small>${f.detail}</small><small>${f.remaining === 0 ? '🚩 直接抵達目的地' : `抵達後：${distanceLabel(f.node,S.goal)}`}${p.cash < f.fare ? ' · 現金不足' : ''}</small></span><b>${fmt(f.fare)}</b></span>`, value: f.node, disabled: p.cash < f.fare })), { label: '取消', value: null }]);
+}
+
+/* ================= 港口 ================= */
+function portAt(node) {
+  const sid = G.nodes[node]?.sid;
+  return PORTS.includes(sid) ? sid : null;
+}
+
+function boatOptions(i) { return transportOptions(i,'boat'); }
+
+// The host recomputes the fare and validates the departure, destination and cash.
+function bookBoat(i, node) {
+  const p = S.players[i];
+  if (p.skip || p.boatRest) return null;
+  const flight = boatOptions(i).find(f => f.node === node);
+  if (!flight || p.cash < flight.fare) return null;
+  p.cash -= flight.fare;
+  log(`🚢 ${p.name} 購票：${placeName(p.pos)} → ${placeName(node)}，票價 ${fmt(flight.fare)}`);
+  return { type: 'boat', node, fare: flight.fare };
+}
+
+async function chooseBoat(i) {
+  const p = S.players[i];
+  if (!portAt(p.pos)) {
+    await modal(`<h3>🚢 港口</h3><p>請先停在有 ⚓ 標記的港口車站，下回合擲骰前即可搭船；搭船抵達後，還需暫停下一回合。</p>
+      <div class="cards">${PORTS.map(sid => `<div class="cardRow"><b>${G.stationById[sid].name}港口</b><span>距目前 ${distanceLabel(p.pos, G.stationNode[sid])}</span></div>`).join('')}</div>`, [{ label: '返回', value: null }]);
+    return null;
+  }
+  const options = boatOptions(i);
+  return modal(`<h3>🚢 ${G.stationById[portAt(p.pos)].name}港口</h3>
+    <p>現金：<b>${fmt(p.cash)}</b></p><p class="hint flightIntro">搭船取代本回合擲骰，<b>下一回合暫停一次</b>。抵達後可購買物件、領取目的地獎勵。票價：基本 ${fmt(BOAT_BASE_FARE)}＋每計費格 ${fmt(BOAT_FARE_PER_TILE)}，向上取整至百萬。離島採航線計費距離，車站至機場／碼頭接駁已包含。</p>
+    `,
+    [...options.map(f => ({ label: `<span class="flightRow"><span><b>航向${G.stationById[G.nodes[f.node].sid].name}</b><small>${f.detail}</small><small>${f.remaining === 0 ? '🚩 直接抵達目的地' : `抵達後：${distanceLabel(f.node,S.goal)}`}${p.cash < f.fare ? ' · 現金不足' : ''}</small></span><b>${fmt(f.fare)}</b></span>`, value: f.node, disabled: p.cash < f.fare })), { label: '取消', value: null }]);
+}
+
 /* ================= 卡片 ================= */
 async function applyCard(i, idx, target) {
   const p = S.players[i], key = p.cards[idx], c = CARDS[key];
+  if (!Number.isInteger(idx) || !c) return null;
+  const acquisition = c.kind === 'acquire' ? acquisitionOptions(i).find(o => o.key === target) : null;
+  if (c.kind === 'acquire' && (!acquisition || p.cash < acquisition.price)) return null;
+  if (G.nodes[p.pos].island && c.kind === 'move') return null;
   if (key === 'charm' && S.curse.holder !== i) return null;
   if (c.kind === 'stop' && (target == null || target === i || !S.players[target])) return null;
   p.cards.splice(idx, 1);
+  if (acquisition) {
+    p.cash -= acquisition.price;
+    S.players[acquisition.owner].cash += acquisition.price;
+    S.owner[acquisition.key] = i;
+  }
   log(`🃏 ${p.name} 使用了「${c.name}」`);
   render();
   await message('🃏 使用卡片', `${p.name} 使用了 <b>「${c.name}」</b>`, 1100 * (p.cpu ? spd() : 1) + 200);
@@ -980,9 +1194,16 @@ async function applyCard(i, idx, target) {
     }
     case 'near': {
       const d = distFrom(S.goal);
-      const opts = G.nodes.filter(n => d[n.id] >= 1 && d[n.id] <= 3).map(n => n.id);
+      let opts = G.nodes.filter(n => d[n.id] >= 1 && d[n.id] <= 3).map(n => n.id);
+      if (!opts.length && G.nodes[S.goal].island) {
+        const sid = G.nodes[S.goal].sid;
+        opts = [...new Set([...ISLAND_FLIGHTS,...ISLAND_BOATS].filter(([a,b])=>a===sid || b===sid).map(([a,b])=>G.stationNode[a===sid?b:a]))];
+      }
       return { type: 'warp', node: pick(opts) };
     }
+    case 'acquire':
+      await note(i, `🤝 ${p.name} 支付 ${fmt(acquisition.price)} 給 ${S.players[acquisition.owner].name}，收購「${acquisition.name}」`, 'buy');
+      return null;
     case 'stop':
       S.players[target].skip = true;
       await note(i, `⛔ ${S.players[target].name} 下回合停駛！`);
@@ -1024,10 +1245,10 @@ function chooseCard(i) {
   const p = S.players[i];
   const rows = p.cards.map((k, idx) => {
     const c = CARDS[k];
-    const dis = k === 'charm' && S.curse.holder !== i;
-    return `<div class="cardRow"><div class="cardIco">${c.kind === 'move' ? '🚄' : c.kind === 'warp' || c.kind === 'near' ? '✨' : c.kind === 'stop' ? '⛔' : c.kind === 'charm' ? '🧧' : '💰'}</div>
+    const dis = (k === 'charm' && S.curse.holder !== i) || (G.nodes[p.pos].island && c.kind === 'move') || (c.kind === 'acquire' && !acquisitionOptions(i).some(o=>p.cash>=o.price));
+    return `<div class="cardRow"><div class="cardIco">${c.kind === 'move' ? '🚄' : c.kind === 'warp' || c.kind === 'near' ? '✨' : c.kind === 'acquire' ? '🤝' : c.kind === 'stop' ? '⛔' : c.kind === 'charm' ? '🧧' : '💰'}</div>
       <div class="cardTxt"><b>${c.name}</b><small>${c.desc}</small></div>
-      <button class="btn sm primary" data-use="${idx}" type="button" ${dis ? 'disabled title="沒有被衰尾道人纏上"' : ''}>使用</button></div>`;
+      <button class="btn sm primary" data-use="${idx}" type="button" ${dis ? 'disabled title="目前無法使用這張卡片"' : ''}>使用</button></div>`;
   }).join('');
   return new Promise(res => {
     modal(`<h3>🃏 ${p.name} 的卡片（${p.cards.length}/8）</h3><div class="cards">${rows}</div>`, [{ label: '關閉', value: null }]).then(res);
@@ -1040,6 +1261,7 @@ function chooseCard(i) {
 /* ================= 玩家操作 ================= */
 /* 向玩家 i 詢問一個決定：本機玩家直接顯示介面，遠端玩家透過網路詢問 */
 function askFallback(kind) {
+  if (kind === 'debt') return null;
   if (kind === 'menu') return { type: 'roll' };
   if (kind === 'end') return null;
   return { done: true };
@@ -1063,6 +1285,7 @@ function ask(i, kind, data) {
 
 /* 在這台裝置上顯示操作介面，回傳玩家的一個決定 */
 async function localAsk(kind, data) {
+  if (kind === 'debt') return chooseDebtSale(data.i);
   if (kind === 'menu') return localMenu(data.i);
   if (kind === 'end') return localChooseEnd(data);
   if (kind === 'station') return localStation(data.i, G.stationById[data.sid]);
@@ -1074,16 +1297,26 @@ async function localMenu(i) {
   const p = S.players[i];
   for (;;) {
     const pr = setActions(
-      `<span class="dot" style="background:${p.color}"></span>${p.name}<small>距目的地 ${dist(p.pos, S.goal)} 格</small>`,
-      [{ label: '🎲 擲骰子', value: 'roll', cls: 'primary' },
+      `<span class="dot" style="background:${p.color}"></span>${p.name}<small>距目的地 ${distanceLabel(p.pos, S.goal)}</small>`,
+      [{ label: G.nodes[p.pos].island ? `🏝️ 留島經營 ＋${fmt(ISLAND_STAY_INCOME)}` : '🎲 擲骰子', value: G.nodes[p.pos].island ? 'stay' : 'roll', cls: 'primary' },
+        { label: airportAt(p.pos) ? '✈️ 搭飛機' : '✈️ 機場資訊', value: 'flight' },
+        { label: portAt(p.pos) ? '🚢 搭船' : '⚓ 港口資訊', value: 'boat' },
         { label: `🃏 卡片 <small>${p.cards.length}</small>`, value: 'cards', disabled: !p.cards.length },
         { label: '🏢 物件資料', value: 'props' },
         { label: '🚩 看目的地', value: 'goal' },
         { label: `${twIcon(17)} 全國地圖`, value: 'map' },
+        { label: '🏝️ 離島地圖', value: 'islands' },
         { label: '📊 排行榜', value: 'rank' }]);
     if (zoom > 1.05) focusNode(p.pos, true);
     const v = await pr;
+    if (v === 'stay') return { type: 'stay' };
     if (v === 'roll') { await diceWaitTap(1); return { type: 'roll' }; }
+    if (v === 'flight' || v === 'boat') {
+      const node = await (v === 'flight' ? chooseFlight(i) : chooseBoat(i));
+      if (node != null) return { type: v, node };
+      continue;
+    }
+    if (v === 'islands') { await viewIslands(); continue; }
     if (v === 'props') { await showProps(i); continue; }
     if (v === 'rank') { await showRanking(); continue; }
     if (v === 'goal') { await viewNode(S.goal, `🚩 目的地：${placeName(S.goal)}`); continue; }
@@ -1092,6 +1325,7 @@ async function localMenu(i) {
       const idx = await chooseCard(i);
       if (idx == null) continue;
       let target = null;
+      if (CARDS[p.cards[idx]].kind === 'acquire') { target = await chooseAcquisition(i); if (target == null) continue; }
       if (CARDS[p.cards[idx]].kind === 'stop') { target = await chooseTarget(i); if (target == null) continue; }
       return { type: 'card', idx, target };
     }
@@ -1103,6 +1337,10 @@ async function viewNode(node, title) {
   focusNode(node, true);
   await pr;
   focusNode(S.players[S.turn].pos, true);
+}
+async function viewIslands() {
+  const sid = await modal(`<h3>🏝️ 離島地圖</h3><p>離島需搭飛機或船抵達，不能用骰子跨海。每島只有一站，不能擲骰移動；可購買交通票離開，或留島經營一回合領取 500 萬。搭船後下一回合暫停一次。</p><p class="hint">台北代表松山機場；嘉義／屏東／墾丁／台東分別包含布袋／東港／後壁湖／富岡接駁。地圖為分區示意，不按真實比例；票價與時間採遊戲規則。離島航線參考現實，本島原有航線仍為遊戲設定。</p>`, ISLANDS.map(island=>({label:`查看${island.name}`,value:island.id})).concat([{label:'返回',value:null}]));
+  if (sid) await viewNode(G.stationNode[sid],`🏝️ ${G.stationById[sid].name}・單站・可購票離開或留島經營`);
 }
 async function viewOverview() {
   const z = zoom;
@@ -1147,24 +1385,24 @@ function localChooseEnd(data) {
         const n = G.nodes[node];
         h += `<circle cx="${n.x}" cy="${n.y}" r="17" class="hl" data-end="${node}"/>`;
       }
-      if (left > 0 && !(cur === S.goal && path.length > 1)) {
-        const c = G.nodes[cur];
-        forwardOpts(cur, prev).forEach(nb => {
-          const n = G.nodes[nb];
-          const ang = Math.atan2(n.y - c.y, n.x - c.x) * 180 / Math.PI;
-          const ax = c.x + (n.x - c.x) * 0.62, ay = c.y + (n.y - c.y) * 0.62;
-          h += `<g class="stepArrow" data-step="${nb}" transform="translate(${ax.toFixed(1)} ${ay.toFixed(1)}) rotate(${ang.toFixed(1)})"><circle r="15"/><path d="M-5,-7 L7,0 L-5,7 Z"/></g>`;
-        });
+      const options = left > 0 && !(cur === S.goal && path.length > 1) ? forwardOpts(cur, prev) : [];
+      for (const nb of options) {
+        const n = G.nodes[nb], r = n.type === 'station' ? 19 : 14;
+        h += `<rect class="stepTarget" data-step="${nb}" x="${n.x - r}" y="${n.y - r}" width="${r * 2}" height="${r * 2}" rx="7"><title>前進到${placeName(nb)}</title></rect>`;
       }
-      const c = G.nodes[cur];
-      h += `<g class="stepBubble" transform="translate(${c.x.toFixed(1)} ${(c.y - 34).toFixed(1)})"><rect x="-26" y="-15" width="52" height="26" rx="13"/><text y="4">剩 ${Math.max(0, left)}</text></g>`;
       $('#lyHL').innerHTML = h;
       cmd.className = 'win stepWin';
       cmd.innerHTML = `<div class="cmdTitle"><span class="dot" style="background:${p.color}"></span>剩下 <b class="left">${Math.max(0, left)}</b> 步</div>
-        <div class="hint">點 <b>箭頭</b> 前進，或點 <b>閃爍的圈</b> 直接停</div>
-        <div class="cmdList"><button class="cmdBtn" id="btnUndo" type="button" ${path.length <= 1 ? 'disabled' : ''}>↩ 退一步</button></div>`;
+        <div class="hint">點方框或下方方向前進；點閃爍圓圈直接停</div>
+        <div class="cmdList">${options.map(nb => {
+          const n = G.nodes[nb], c = G.nodes[cur];
+          const arrow = ['→', '↘', '↓', '↙', '←', '↖', '↑', '↗'][(Math.round(Math.atan2(n.y - c.y, n.x - c.x) / (Math.PI / 4)) + 8) % 8];
+          const symbol = { blue: '+', red: '−', yellow: '?', station: '站' }[n.type];
+          return `<button class="cmdBtn directionBtn" data-step="${nb}" type="button">${arrow} <span class="tileLegend ${n.type}">${symbol}</span> ${placeName(nb)}</button>`;
+        }).join('')}<button class="cmdBtn" id="btnUndo" type="button" ${path.length <= 1 ? 'disabled' : ''}>↩ 退一步</button></div>`;
       cmd.classList.remove('hidden');
       if (zoom > 1.05 || path.length === 1) focusNode(cur, path.length === 1);
+      cmd.querySelectorAll('[data-step]').forEach(button => { button.onclick = () => stepClick && stepClick(button); });
       $('#btnUndo').onclick = () => { if (path.length > 1 && !finished) { path.pop(); draw(); } };
     };
     stepClick = el => {
@@ -1189,10 +1427,15 @@ async function humanPreRoll(i) {
   const p = S.players[i];
   for (;;) {
     const a = await ask(i, 'menu', { i });
-    if (!a || a.type !== 'card') return { type: 'roll', dice: 1 };
+    if (a && (a.type === 'flight' || a.type === 'boat')) {
+      const flight = a.type === 'flight' ? bookFlight(i, a.node) : bookBoat(i, a.node);
+      if (flight) return flight;
+      continue;
+    }
+    if (!a || a.type !== 'card') return G.nodes[p.pos].island ? { type: 'stay' } : { type: 'roll', dice: 1 };
     const idx = +a.idx;
     if (!(idx >= 0 && idx < p.cards.length)) continue;
-    const r = await applyCard(i, idx, a.target == null ? null : +a.target);
+    const r = await applyCard(i, idx, a.target == null ? null : CARDS[p.cards[idx]].kind === 'acquire' ? a.target : +a.target);
     render();
     if (r) return r;
   }
@@ -1325,14 +1568,27 @@ async function cpuPreRoll(i) {
   if (S.curse.holder === i && p.cards.includes('charm')) await useKey('charm');
   while (p.cards.includes('redpacket')) await useKey('redpacket');
   if (p.cards.includes('tax') && S.players.some((q, j) => j !== i && q.cash > 3000)) await useKey('tax');
+  if (p.cards.includes('acquire')) {
+    const option = acquisitionOptions(i).filter(o=>p.cash-o.price>=1500*yf()).sort((a,b)=>b.income/b.price-a.income/a.price)[0];
+    if (option) await useKey('acquire',option.key);
+  }
   const d = dist(p.pos, S.goal);
   if (p.cards.includes('stop')) {
     let lead = -1, ld = Infinity;
-    S.players.forEach((q, j) => { if (j !== i && !q.skip) { const qd = dist(q.pos, S.goal); if (qd < ld) { ld = qd; lead = j; } } });
+    S.players.forEach((q, j) => { if (j !== i && !q.skip && !q.boatRest) { const qd = dist(q.pos, S.goal); if (qd < ld) { ld = qd; lead = j; } } });
     if (lead >= 0 && ld < d && ld <= 12) await useKey('stop', lead);
   }
   render();
   if (d > 8 && p.cards.includes('near')) return useKey('near');
+  const transport = [...flightOptions(i).map(f => ({ ...f, type: 'flight' })), ...boatOptions(i).map(f => ({ ...f, type: 'boat' }))]
+    .map(f => ({ ...f, effectiveDistance: f.remaining + (f.type === 'boat' ? 4 : 0) }))
+    .filter(f => { const crossing = !Number.isFinite(distFrom(p.pos)[S.goal]); return d - f.effectiveDistance >= (crossing ? 1 : 12) && p.cash - f.fare >= (crossing ? 0 : 1500 * yf()); })
+    .sort((a, b) => a.effectiveDistance - b.effectiveDistance || a.fare - b.fare)[0];
+  if (transport) return transport.type === 'flight' ? bookFlight(i, transport.node) : bookBoat(i, transport.node);
+  if (G.nodes[p.pos].island) {
+    if (p.cards.includes('warp')) return useKey('warp');
+    return { type: 'stay' };
+  }
   if (d > 40 && p.cards.includes('warp') && Math.random() < 0.5) return useKey('warp');
   if (d > 6) {
     if (d > 14 && p.cards.includes('hsr')) return useKey('hsr');
@@ -1379,6 +1635,7 @@ async function cpuShop(i) {
   const reserve = r10(1500 * yf());
   const buy = async key => { p.cash -= CARDS[key].price; p.cards.push(key); await note(i, `🃏 ${p.name} 買了「${CARDS[key].name}」`); };
   if (S.curse.holder === i && !p.cards.includes('charm') && p.cash > CARDS.charm.price + reserve) await buy('charm');
+  if (p.cards.length < 8 && !p.cards.includes('acquire') && p.cash > CARDS.acquire.price + reserve * 3 && Object.values(S.owner).some(owner=>owner!==i)) await buy('acquire');
   if (p.cards.length < 4) {
     if (p.cash > CARDS.hsr.price + reserve * 4) await buy('hsr');
     else if (p.cash > CARDS.limited.price + reserve * 2) await buy('limited');
@@ -1391,10 +1648,15 @@ const RULES = `
 <h3>📖 遊戲規則</h3>
 <div class="rules">
 <p><b>目標：</b>遊戲年數結束時，<b>總資產（現金＋物件）最多</b>的人獲勝。每年從 1 月開始，12 月底決算。</p>
-<p><b>回合：</b>輪到你時，從指令視窗選「擲骰子」，點一下讓骰子停下。接著點地圖上的 <b>箭頭</b> 一步一步前進（可以退回），或直接點 <b>閃爍的圈</b> 停在那一格。</p>
+<p><b>回合：</b>輪到你時，從指令視窗選「擲骰子」，點一下讓骰子停下。接著點地圖上的 <b>方框或操作面板的方向</b> 一步一步前進（可以退回），或直接點 <b>閃爍的圈</b> 停在那一格。</p>
+<p><b>✈️ 機場：</b>台北、桃園、台中、高雄、花蓮、台東可搭機。在機場車站開始回合時，選「搭飛機」並支付票價，取代該回合擲骰。抵達後照常購物與領取目的地獎勵；飛行不觸發沿途格子，也不會甩掉衰尾道人。票價為基本 1500 萬＋鐵路每格 80 萬，向上取整至百萬。</p>
+<p><b>⚓ 港口：</b>基隆、蘇澳、花蓮、台中、高雄可搭船。必須停在港口車站，下回合擲骰前選「搭船」並購票，取代本回合擲骰；路過港口不能搭船。搭船後下一回合暫停一次，再下回合恢復行動。抵達後照常購物與領取目的地獎勵，不觸發沿途格子，也不會甩掉衰尾道人。船票為基本 800 萬＋鐵路每格 40 萬，向上取整至百萬。</p>
+<p><b>🏝️ 離島：</b>澎湖、金門、馬祖、綠島、蘭嶼、小琉球各只有一個站點與物件，島內不能移動。可選「留島經營」花一回合領取 500 萬，存夠交通費再離開；搭船後暫停的回合不發經營收入。只能沿指定航空／船運路線進出（卡片效果除外）；小琉球沒有機場，金門本版僅提供航空。港口、機場接駁合併於對應車站。跨海距離顯示為轉乘估算，不是骰子可走的格數。</p>
 <p><b>🚩 目的地：</b>用輪盤決定。第一個抵達的人拿到大筆獎金（年份越後面越多），接著轉出新的目的地。路過目的地會自動停下。</p>
 <p><b>格子：</b><span class="sw blue"></span>藍色格拿錢　<span class="sw red"></span>紅色格扣錢　<span class="sw yellow"></span>黃色格抽卡　<span class="sw st"></span>車站可購買物件（紫框車站有卡片商店）</p>
 <p><b>物件與獨佔：</b>每年決算時，物件帶來「價格 × 收益率」的收入。買下同一站全部物件即可<b>獨佔</b>，收益加倍。</p>
+<p><b>🏦 負債變賣：</b>現金變負時，玩家逐項選擇物件，以原價一半變賣，直到還清或無物件可賣。售出物件重新開放購買，獨佔收益也重新計算；賣完仍不足則保留負債。電腦或斷線代打優先出售基礎年收益較低的物件。</p>
+<p><b>🤝 收購卡：</b>擲骰前，在目前車站選一項對手物件，付原價 2 倍給原持有人並取得所有權。不足現金、無有效目標或取消不消耗卡片。可由卡片格抽得或在商店以 2000 萬購買。</p>
 <p><b>🌧️ 衰尾道人：</b>有人抵達目的地時，離目的地最遠的玩家會被衰尾道人纏上，每回合亂花錢、丟卡片、賤賣物件。久了還會變成更恐怖的<b>大衰尾 ⛈️</b>。移動時經過或停在其他玩家所在的格子，就能把它甩給對方！平安符可以直接趕走它。</p>
 <p><b>🃏 卡片：</b>莒光號／自強號／高鐵卡可以一次擲多顆骰子；停駛卡讓對手停一回合；瞬移卡、導航卡可以傳送；紅包卡、查稅卡可以賺錢。</p>
 <p><b>其他：</b>每個月有機率發生颱風、美食爆紅等事件。遊戲每回合自動存檔。左側的 ${twIcon(15)} 按鈕可以切換全國地圖。</p>

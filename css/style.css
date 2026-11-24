@@ -320,17 +320,18 @@ select option { background: #0f1e3a; }
 .st.shop rect { stroke: #9c36b5; }
 .st text { font-size: 18px; font-weight: 900; fill: #1d2433; paint-order: stroke; stroke: #fff; stroke-width: 5px; stroke-linejoin: round; }
 .monoStar { fill: #fff; font-size: 13px; text-anchor: middle; pointer-events: none; }
-.hl { fill: rgba(255,255,255,.25); stroke: #ff2d7a; stroke-width: 3.5; stroke-dasharray: 6 4; cursor: pointer; animation: pulse 1s infinite; }
+.hl { fill: none; pointer-events: all; stroke: #ff2d7a; stroke-width: 3.5; stroke-dasharray: 6 4; cursor: pointer; animation: pulse 1s infinite; }
 .goalRing { fill: none; stroke: #ffb300; stroke-width: 4; animation: pulse 1.4s infinite; pointer-events: none; }
 .goalFlag { font-size: 26px; pointer-events: none; }
 @keyframes pulse { 50% { stroke-width: 8; opacity: .55; } }
-.stepArrow { cursor: pointer; }
-.stepArrow circle { fill: #ff2d7a; stroke: #fff; stroke-width: 3; }
-.stepArrow path { fill: #fff; }
-.stepArrow:hover circle { fill: #ff5c97; }
-.stepBubble { pointer-events: none; }
-.stepBubble rect { fill: #0f1e3a; stroke: var(--gold); stroke-width: 2; }
-.stepBubble text { fill: var(--gold2); font-size: 15px; font-weight: 900; text-anchor: middle; }
+.stepTarget { fill: none; stroke: #d41460; stroke-width: 2.5; cursor: pointer; pointer-events: all; }
+.stepTarget:hover { stroke: #851041; stroke-width: 4; }
+.tileLegend { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 5px; color: white; border: 1px solid white; flex: none; font-weight: 900; }
+.tileLegend.blue { background: #2f6fde; }
+.tileLegend.red { background: #e0453a; }
+.tileLegend.yellow { background: #f2b705; color: #17233b; }
+.tileLegend.station { background: white; color: #1f3a5f; }
+#cmd.stepWin .directionBtn { justify-content: flex-start; text-align: left; }
 .tok { pointer-events: none; }
 .tok circle:nth-of-type(2) { stroke: #fff; stroke-width: 3; }
 .tok.cur circle:nth-of-type(2) { stroke: #ffd76a; stroke-width: 4; }
@@ -338,3 +339,14 @@ select option { background: #0f1e3a; }
 .curseIco { font-size: 17px; pointer-events: none; }
 .floatTxt { font-size: 20px; font-weight: 900; text-anchor: middle; paint-order: stroke; stroke: #0f1e3a; stroke-width: 5px; pointer-events: none; animation: floatUp 1.6s ease-out forwards; }
 @keyframes floatUp { from { transform: translateY(0); opacity: 1; } to { transform: translateY(-46px); opacity: 0; } }
+
+/* 航班票價與抵達資訊 */
+.flightIntro + .btns { display: grid; grid-template-columns: 1fr; }
+.flightIntro + .btns .btn { padding: 0; text-align: left; }
+.flightIntro + .btns .btn:last-child { padding: 9px 16px; text-align: center; }
+.flightRow { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; border-radius: 8px; background: rgba(255,255,255,.06); }
+.flightRow small { display: block; margin-top: 3px; color: var(--muted); }
+.flightRow > b { color: var(--gold2); white-space: nowrap; }
+
+.islandInset > rect { fill: #dcecf4; stroke: #8fb5cc; stroke-width: 1.5; stroke-dasharray: 5 4; }
+.islandInset > text { fill: #46677e; font-size: 11px; }
