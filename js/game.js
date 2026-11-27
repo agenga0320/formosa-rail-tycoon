@@ -1746,8 +1746,33 @@ function init() {
     log('💾 讀取存檔，繼續遊戲', 'month');
     gameLoop();
   };
+  // Android 版發現新版時會帶 ?update=版本 重新載入，必須更新才能遊玩
+  const upd = new URLSearchParams(location.search).get('update');
+  if (upd && window.AndroidApp && /^\d+\.\d+\.\d+$/.test(upd)) { showAppUpdate(upd); return; }
   showSetup();
   if (typeof netInit === 'function') netInit();
+}
+
+/* ================= App 更新（僅 Android 版） ================= */
+/* 畫面由 Android 端呼叫 appUpdate.* 推進：progress → ready → (permission) → 安裝 */
+function showAppUpdate(ver) {
+  const box = $('#modal .box');
+  const view = (body, buttons) => {
+    box.innerHTML = `<h3>🚂 發現新版本</h3><p>目前版本 v${AndroidApp.version()}　→　新版本 <b>v${ver}</b></p>${body}<div class="btns">${
+      buttons.map(b => `<button class="btn ${b.cls || ''}" type="button" data-a="${b.a}">${b.label}</button>`).join('')}</div>`;
+    box.querySelectorAll('[data-a]').forEach(el => { el.onclick = () => act[el.dataset.a](); });
+  };
+  const act = { download: () => { AndroidApp.download(ver); appUpdate.progress(0); }, install: () => AndroidApp.install(), allow: () => AndroidApp.allowInstall(), quit: () => AndroidApp.quit() };
+  const quit = { label: '離開', a: 'quit' };
+  window.appUpdate = {
+    start: () => view('<p>為了讓大家連線對戰時使用相同的遊戲版本，需要先更新才能繼續遊玩。</p>', [quit, { label: '⬇️ 下載更新', a: 'download', cls: 'primary' }]),
+    progress: pct => view(`<div class="upBar"><i style="width:${Math.max(pct, 0)}%"></i></div><p class="hint">下載中…${pct >= 0 ? ' ' + pct + '%' : ''}</p>`, [quit]),
+    ready: () => view('<div class="upBar"><i style="width:100%"></i></div><p>下載完成！請在接下來的畫面按「安裝」。</p>', [quit, { label: '📦 安裝', a: 'install', cls: 'primary' }]),
+    permission: () => view('<p>第一次更新需要允許本 App 安裝更新檔。<br>請在設定中開啟「允許這個來源」，返回後會自動繼續安裝。</p>', [quit, { label: '⚙️ 前往設定', a: 'allow', cls: 'primary' }]),
+    failed: () => view('<p class="err">下載或安裝失敗，請確認網路後重試。</p>', [quit, { label: '🔄 重試', a: 'download', cls: 'primary' }]),
+  };
+  appUpdate.start();
+  $('#modal').classList.remove('hidden');
 }
 
 document.addEventListener('DOMContentLoaded', init);

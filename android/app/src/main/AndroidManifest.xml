@@ -3,6 +3,8 @@
 
     <!-- Online play loads PeerJS and connects to other players. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Lets the in-game update screen hand the downloaded APK to the system installer. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:allowBackup="true"
