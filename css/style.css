@@ -63,8 +63,15 @@ button { font: inherit; color: inherit; }
 .pTop { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .pName { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pIcons { margin-left: auto; font-size: 13px; white-space: nowrap; }
+.pRow { display: flex; align-items: center; justify-content: space-between; gap: 4px; flex-wrap: wrap; }
 .pMoney { font-size: 18px; font-weight: 800; color: var(--gold2); }
 .pMoney.neg { color: #ff8a80; }
+/* 離目的地格數；最近的人用金色標示 */
+.pDist { font-size: 12px; font-weight: 800; white-space: nowrap; padding: 0 6px; border-radius: 8px; background: rgba(255,255,255,.14); color: #fff; }
+.pDist.near { background: var(--gold); color: #1d2433; }
+.dList { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 4px; }
+.dRank { font-size: 12px; font-weight: 700; white-space: nowrap; padding: 1px 7px; border-radius: 8px; border-left: 4px solid var(--pc); background: rgba(255,255,255,.1); color: #fff; }
+.toast .dList { justify-content: center; }
 .pSub { font-size: 11px; color: var(--muted); }
 .chip { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; flex: none; border-radius: 50%; background: var(--pc, #888); color: #fff; font-weight: 800; font-size: 11px; }
 small.you { background: var(--gold); color: #1d2433; border-radius: 4px; padding: 0 5px; font-weight: 800; font-size: 11px; }
@@ -301,6 +308,7 @@ select option { background: #0f1e3a; }
   .pIcons { font-size: 11px; }
   .chip { width: 16px; height: 16px; font-size: 10px; }
   .pMoney { font-size: 13px; }
+  .pDist { font-size: 11px; padding: 0 4px; }
   .pSub { display: none; }
   .mapBtns { top: auto; bottom: 50%; transform: none; left: 6px; gap: 5px; }
   .mapBtns button { width: 38px; height: 38px; font-size: 16px; }

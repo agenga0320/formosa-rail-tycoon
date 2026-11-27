@@ -405,12 +405,24 @@ function renderTop() {
   bgmSetMood(S.curse.holder === S.turn && !S.over ? 'curse' : 'normal');
 }
 
+/* 離目的地的短標示：鐵路走得到就是確切格數，要轉乘（離島）則是估算 */
+function shortDist(a, b) {
+  const rail = distFrom(a)[b];
+  return Number.isFinite(rail) ? `${rail}格` : `約${dist(a, b)}格`;
+}
+/* 依離目的地遠近排序的玩家清單（最近的戴皇冠） */
+function distRankHTML() {
+  const rows = S.players.map(p => ({ p, d: dist(p.pos, S.goal) })).sort((a, b) => a.d - b.d);
+  return rows.map(r => `<span class="dRank" style="--pc:${r.p.color}">${r.d === rows[0].d ? '👑' : ''}${r.p.name} ${shortDist(r.p.pos, S.goal)}</span>`).join('');
+}
+
 function renderPlayers() {
+  const ds = S.players.map(p => dist(p.pos, S.goal)), best = Math.min(...ds);
   $('#players').innerHTML = S.players.map((p, i) => `
     <div class="pcard${i === S.turn ? ' cur' : ''}" data-p="${i}" style="--pc:${p.color}">
       <div class="pTop"><span class="chip">${i + 1}</span><b class="pName">${p.name}</b>${isMine(i) ? '<small class="you">你</small>' : ''}<span class="pIcons">${S.curse.holder === i ? (S.curse.level > 1 ? '⛈️' : '🌧️') : ''}${p.skip ? '⛔' : ''}${p.boatRest ? '<span title="搭船後下回合暫停">🚢⏸</span>' : ''}${p.offline ? '📴' : p.cpu ? '🤖' : p.peer && !isMine(i) ? '🌐' : ''}</span></div>
-      <div class="pMoney ${p.cash < 0 ? 'neg' : ''}">${fmt(p.cash)}</div>
-      <div class="pSub">資產 ${fmt(assets(i))}・🃏${p.cards.length}・距 ${distanceLabel(p.pos, S.goal)}</div>
+      <div class="pRow"><span class="pMoney ${p.cash < 0 ? 'neg' : ''}">${fmt(p.cash)}</span><span class="pDist${ds[i] === best ? ' near' : ''}" title="離目的地 ${distanceLabel(p.pos, S.goal)}">🚩${shortDist(p.pos, S.goal)}</span></div>
+      <div class="pSub">資產 ${fmt(assets(i))}・🃏${p.cards.length}</div>
     </div>`).join('');
 }
 
@@ -1380,7 +1392,7 @@ async function localMenu(i) {
     if (v === 'islands') { await viewIslands(); continue; }
     if (v === 'props') { await showProps(i); continue; }
     if (v === 'rank') { await showRanking(); continue; }
-    if (v === 'goal') { await viewNode(S.goal, `🚩 目的地：${placeName(S.goal)}`); continue; }
+    if (v === 'goal') { await viewNode(S.goal, `🚩 目的地：${placeName(S.goal)}<small class="dList">${distRankHTML()}</small>`); continue; }
     if (v === 'map') { await viewOverview(); continue; }
     if (v === 'cards') {
       const idx = await chooseCard(i);
@@ -1804,7 +1816,12 @@ function init() {
   $('#zoomFocus').onclick = () => S && focusNode(S.players[S.turn].pos, true);
   $('#btnOverview').innerHTML = twIcon(26);
   $('#btnOverview').onclick = toggleOverview;
-  $('#goalInfo').onclick = () => { if (S) { if (zoom < 1.5) setZoom(2, S.goal); else focusNode(S.goal, true); } };
+  // 點上方的目的地卡：鏡頭移到目的地，並列出每個人離目的地多遠（誰的回合都能看）
+  $('#goalInfo').onclick = () => {
+    if (!S) return;
+    if (zoom < 1.5) setZoom(2, S.goal); else focusNode(S.goal, true);
+    toast(`<b>🚩 離${G.stationById[G.nodes[S.goal].sid].name}站</b><div class="dList">${distRankHTML()}</div>`);
+  };
   $('#btnRules2').onclick = () => modal(RULES, [{ label: '了解', value: true, cls: 'primary' }]);
   $('#btnLog').onclick = () => $('#logDrawer').classList.toggle('hidden');
   $('#btnSound').textContent = soundIcon();
