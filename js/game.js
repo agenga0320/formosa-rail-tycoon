@@ -567,6 +567,18 @@ function setActions(title, buttons, extraCls) {
 }
 
 let modalSeq = 0;
+/* 目前視窗的「關閉」動作（點框外、右上 ✕、Android 返回鍵共用）；null 表示必須做出選擇 */
+let modalDismiss = null;
+function addClose(box, fn) {
+  modalDismiss = fn;
+  box.insertAdjacentHTML('afterbegin', '<button class="xBtn" type="button" aria-label="關閉">✕</button>');
+  box.querySelector('.xBtn').onclick = () => modalDismiss && modalDismiss();
+}
+function dismissModal() {
+  if ($('#modal').classList.contains('hidden') || !modalDismiss) return false;
+  modalDismiss();
+  return true;
+}
 function modal(html, buttons = [{ label: '確定', value: true, cls: 'primary' }], opts = {}) {
   return new Promise(res => {
     const m = $('#modal'), box = m.querySelector('.box');
@@ -577,8 +589,11 @@ function modal(html, buttons = [{ label: '確定', value: true, cls: 'primary' }
     const seq = ++modalSeq;
     let timer = null;
     // 只關掉自己這個視窗：若已被新的視窗取代，就不要把新的關掉
-    const close = v => { clearTimeout(timer); if (seq === modalSeq) m.classList.add('hidden'); res(v); };
+    const close = v => { clearTimeout(timer); if (seq === modalSeq) { m.classList.add('hidden'); modalDismiss = null; } res(v); };
     box.querySelectorAll('.btns:last-child > button').forEach(el => { el.onclick = () => close(buttons[+el.dataset.k].value); });
+    // 有「取消／關閉／返回」（value 為 null）或只是單一按鈕的說明視窗，才允許直接關閉，效果等同按該按鈕
+    const cancel = buttons.find(b => b.value === null) || (buttons.length === 1 && /^(確定|關閉|了解|返回)$/.test(buttons[0].label) ? buttons[0] : null);
+    if (cancel) addClose(box, () => close(cancel.value)); else modalDismiss = null;
     if (opts.auto) timer = setTimeout(() => close(buttons[0].value), opts.auto);
   });
 }
@@ -1512,10 +1527,12 @@ function localStation(i, s) {
       }
       h += '<div class="btns"><button class="btn primary" data-done="1" type="button">離開車站</button></div>';
       box.innerHTML = h;
-      const lock = () => box.querySelectorAll('button').forEach(b => { b.disabled = true; });
+      const lock = () => { modalDismiss = null; box.querySelectorAll('button').forEach(b => { b.disabled = true; }); };
+      const leave = () => { m.classList.add('hidden'); modalDismiss = null; res({ done: true }); };
       box.querySelectorAll('[data-buy]').forEach(el => el.onclick = () => { lock(); res({ buy: +el.dataset.buy }); });
       box.querySelectorAll('[data-card]').forEach(el => el.onclick = () => { lock(); res({ card: el.dataset.card }); });
-      box.querySelector('[data-done]').onclick = () => { m.classList.add('hidden'); res({ done: true }); };
+      box.querySelector('[data-done]').onclick = leave;
+      addClose(box, leave);
     };
     draw();
     m.classList.remove('hidden');
@@ -1735,6 +1752,7 @@ function init() {
     const el = e.target.closest('[data-p]');
     if (el && S && $('#modal').classList.contains('hidden')) { const i = +el.dataset.p; focusNode(S.players[i].pos, true); showProps(i); }
   });
+  $('#modal').addEventListener('click', e => { if (e.target === e.currentTarget) dismissModal(); });
   $('#btnStart').onclick = startFromSetup;
   $('#btnContinue').onclick = () => {
     const s = loadSave();
@@ -1771,8 +1789,19 @@ function showAppUpdate(ver) {
     permission: () => view('<p>第一次更新需要允許本 App 安裝更新檔。<br>請在設定中開啟「允許這個來源」，返回後會自動繼續安裝。</p>', [quit, { label: '⚙️ 前往設定', a: 'allow', cls: 'primary' }]),
     failed: () => view('<p class="err">下載或安裝失敗，請確認網路後重試。</p>', [quit, { label: '🔄 重試', a: 'download', cls: 'primary' }]),
   };
+  modalDismiss = null; // 必須更新，不能關閉
   appUpdate.start();
   $('#modal').classList.remove('hidden');
+}
+
+/* Android 返回鍵／手勢：先關掉可關閉的視窗；沒有可關的就要連按兩次才離開，避免誤觸中斷遊戲。回傳 false 才讓 App 離開 */
+let lastBack = 0;
+function appBack() {
+  if (dismissModal()) return true;
+  if (Date.now() - lastBack < 2000) return false;
+  lastBack = Date.now();
+  toast(NET.mode === 'host' ? '再按一次返回鍵離開（你是房主，離開會中斷所有人的遊戲）' : '再按一次返回鍵離開遊戲');
+  return true;
 }
 
 document.addEventListener('DOMContentLoaded', init);

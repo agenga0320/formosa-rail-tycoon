@@ -65,6 +65,14 @@ class MainActivity : Activity() {
         }
         checkForUpdate()
     }
+    /** Back closes the game's open window first (js/game.js appBack); only an unhandled back leaves the app. */
+    @Deprecated("Still delivered at targetSdk 34 without the predictive-back opt-in")
+    override fun onBackPressed() {
+        web.evaluateJavascript("typeof appBack === 'function' && appBack()") { handled ->
+            if (handled != "true" && !isFinishing) finish()
+        }
+    }
+
     override fun onDestroy() { handler.removeCallbacksAndMessages(null); web.destroy(); super.onDestroy() }
 
     /** Called from the game's update screen (js/game.js showAppUpdate). */
