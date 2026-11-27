@@ -328,7 +328,7 @@ function buildMapSVG() {
     else { lx = n.x + 20; anchor = 'start'; }
     h += `<g class="st${s.shop ? ' shop' : ''}" data-node="${n.id}">
       <rect x="${n.x - 14}" y="${n.y - 14}" width="28" height="28" rx="6"/>
-      <text x="${lx}" y="${ly}" text-anchor="${anchor}">${s.name}${AIRPORTS.includes(s.id) ? ' ✈' : ''}${PORTS.includes(s.id) ? ' ⚓' : ''}</text></g>`;
+      <text x="${lx}" y="${ly}" text-anchor="${anchor}">${s.name}${AIRPORTS.includes(s.id) ? `<tspan class="trIco" data-tr="flight" data-sid="${s.id}"> ✈</tspan>` : ''}${PORTS.includes(s.id) ? `<tspan class="trIco" data-tr="boat" data-sid="${s.id}"> ⚓</tspan>` : ''}</text></g>`;
   });
   h += '<g id="lyOwn"></g><g id="lyGoal"></g><g id="lyHL"></g><g id="lyTok"></g><g id="lyFx"></g>';
   svg.innerHTML = h;
@@ -1111,17 +1111,30 @@ function airportAt(node) {
   return AIRPORTS.includes(sid) ? sid : null;
 }
 
-function transportOptions(i, kind) {
-  const p = S.players[i], sid = G.nodes[p.pos].sid;
+/* 從某站出發的所有航線與票價（kind: flight / boat） */
+function routesFrom(node, kind) {
+  const sid = G.nodes[node].sid;
   const flying = kind === 'flight';
   const legacy = flying ? MAINLAND_AIRPORTS : MAINLAND_PORTS;
   const routes = flying ? ISLAND_FLIGHTS : ISLAND_BOATS;
-  const choices = legacy.includes(sid) ? legacy.filter(s => s !== sid).map(s => ({node:G.stationNode[s], units:distFrom(p.pos)[G.stationNode[s]], detail:'本島遊戲航線'})) : [];
+  const choices = legacy.includes(sid) ? legacy.filter(s => s !== sid).map(s => ({node:G.stationNode[s], units:distFrom(node)[G.stationNode[s]], detail:'本島遊戲航線'})) : [];
   for (const [a,b,units,detail] of routes) {
     if (sid===a || sid===b) choices.push({node:G.stationNode[sid===a?b:a],units,detail});
   }
-  return choices.map(f => ({...f, fare:Math.ceil(((flying?FLIGHT_BASE_FARE:BOAT_BASE_FARE)+f.units*(flying?FLIGHT_FARE_PER_TILE:BOAT_FARE_PER_TILE))/100)*100, remaining:dist(f.node,S.goal)}))
+  return choices.map(f => ({...f, fare:Math.ceil(((flying?FLIGHT_BASE_FARE:BOAT_BASE_FARE)+f.units*(flying?FLIGHT_FARE_PER_TILE:BOAT_FARE_PER_TILE))/100)*100}));
+}
+function transportOptions(i, kind) {
+  return routesFrom(S.players[i].pos, kind).map(f => ({...f, remaining:dist(f.node,S.goal)}))
     .sort((a,b)=>a.remaining-b.remaining || a.fare-b.fare);
+}
+/* 點地圖上的 ✈／⚓：列出該站可抵達的地點與票價（只看，不購票） */
+function showRoutes(sid, kind) {
+  const flying = kind === 'flight', name = G.stationById[sid].name;
+  const rows = routesFrom(G.stationNode[sid], kind).sort((a,b) => a.fare - b.fare).map(f =>
+    `<div class="cardRow"><div class="cardTxt"><b>${flying ? '飛往' : '航向'}${G.stationById[G.nodes[f.node].sid].name}</b><small>${f.detail}</small></div><b>${fmt(f.fare)}</b></div>`).join('');
+  return modal(`<h3>${flying ? `✈️ ${name}機場` : `🚢 ${name}港口`}</h3>
+    <p class="hint flightIntro">${flying ? '在本站開始回合時可搭機，取代該回合擲骰。' : '在本站開始回合時可搭船，取代該回合擲骰；抵達後下一回合暫停一次。'}</p>
+    <div class="cards">${rows}</div>`, [{ label: '關閉', value: null }]);
 }
 function flightOptions(i) { return transportOptions(i,'flight'); }
 
@@ -1745,6 +1758,8 @@ function init() {
       else if (stepEl.dataset.end != null && actResolve) actResolve(+stepEl.dataset.end);
       return;
     }
+    const tr = e.target.closest('[data-tr]');
+    if (tr && $('#modal').classList.contains('hidden')) { showRoutes(tr.dataset.sid, tr.dataset.tr); return; }
     const st = e.target.closest('.st');
     if (st && S && $('#modal').classList.contains('hidden')) stationInfo(G.nodes[+st.dataset.node].sid);
   });

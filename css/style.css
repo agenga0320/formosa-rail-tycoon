@@ -322,6 +322,7 @@ select option { background: #0f1e3a; }
 .st { cursor: pointer; }
 .st rect { fill: #fff; stroke: #1f3a5f; stroke-width: 4; }
 .st.shop rect { stroke: #9c36b5; }
+.st .trIco { font-size: 22px; }
 .st text { font-size: 18px; font-weight: 900; fill: #1d2433; paint-order: stroke; stroke: #fff; stroke-width: 5px; stroke-linejoin: round; }
 .monoStar { fill: #fff; font-size: 13px; text-anchor: middle; pointer-events: none; }
 .hl { fill: none; pointer-events: all; stroke: #ff2d7a; stroke-width: 3.5; stroke-dasharray: 6 4; cursor: pointer; animation: pulse 1s infinite; }
