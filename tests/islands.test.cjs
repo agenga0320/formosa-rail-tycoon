@@ -16,8 +16,11 @@ function game() {
   return run;
 }
 test('original node IDs and tile types remain compatible with saved games',()=>{
- const baseline=context(cp.execFileSync('git',['show','HEAD:js/data.js'],{cwd:root,encoding:'utf8'}),cp.execFileSync('git',['show','HEAD:js/game.js'],{cwd:root,encoding:'utf8'}));
+ // Fixed baseline: the last commit before islands were added, whose map is the 117 tiles old saves index into.
+ const show=f=>cp.execFileSync('git',['show','41188ac:'+f],{cwd:root,encoding:'utf8'});
+ const baseline=context(show('js/data.js'),show('js/game.js'));
  const old=JSON.parse(vm.runInContext('JSON.stringify(G.nodes.map(n=>({id:n.id,type:n.type,sid:n.sid})))',baseline));
+ assert.equal(old.length,117);
  const run=game();const current=JSON.parse(run('JSON.stringify(G.nodes.slice(0,117).map(n=>({id:n.id,type:n.type,sid:n.sid})))'));
  assert.deepEqual(current,old);
 });
