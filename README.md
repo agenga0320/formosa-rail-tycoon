@@ -36,6 +36,17 @@ python -m http.server 8741
 
 然後打開 http://localhost:8741
 
+## Android App
+
+`android/` 是包住網頁遊戲的 WebView 外殼，建置時會把 `index.html`、`css/`、`js/` 複製進 APK，所以單機遊戲可離線玩，線上對戰仍需網路。
+
+```bash
+cd android
+./gradlew assembleRelease
+```
+
+簽章金鑰放在 `android/release.jks` 與 `android/keystore.properties`（不進版控）；沒有這兩個檔案時 release 版不會簽章。
+
 ## 檔案結構
 
 - `index.html` — 頁面
