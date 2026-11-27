@@ -25,17 +25,30 @@
 3. 人數不夠可以加入電腦玩家，房主按「開始遊戲」
 
 房主的瀏覽器負責執行遊戲，請保持房主頁面開著。玩家斷線時會由電腦代打，回來後（或用同樣名字重新加入）就能接手。
-連線使用 [PeerJS](https://peerjs.com/)（WebRTC 點對點），不需要自己的伺服器。
+連線透過 Cloudflare Workers + Durable Objects 轉送（`worker/index.js`），每個房間一個 Durable Object。
+房主或玩家網路短暫中斷時會自動重連；房主斷線後房間保留 10 分鐘。
+
+遊戲網址：https://formosa-rail-tycoon.formosa-rail-tycoon.workers.dev
+（GitHub Pages 版和 Android App 也會連到這台伺服器，網址設定在 `js/net.js` 的 `ROOM_SERVER`。）
+
+## 部署到 Cloudflare
+
+```bash
+npm install
+npx wrangler login     # 第一次需要
+npm run deploy         # 網頁和連線伺服器一起上傳（不上傳的檔案列在 .assetsignore）
+```
 
 ## 本機執行
 
-純 HTML / CSS / JavaScript，不需要建置：
+純 HTML / CSS / JavaScript，不需要建置。要連同線上對戰一起測試：
 
 ```bash
-python -m http.server 8741
+npm install
+npm run dev
 ```
 
-然後打開 http://localhost:8741
+然後打開 http://localhost:8787（只測單機的話，`python -m http.server 8741` 也可以）
 
 ## Android App
 
@@ -60,3 +73,6 @@ App 每次開啟或回到前景時會查 GitHub Releases 的最新版；有新�
 - `css/style.css` — 樣式
 - `js/data.js` — 車站、路線、物件、卡片資料
 - `js/game.js` — 遊戲引擎與介面
+- `js/net.js` — 線上對戰（瀏覽器端）
+- `worker/index.js` — Cloudflare 連線伺服器
+- `wrangler.jsonc` — Cloudflare 部署設定

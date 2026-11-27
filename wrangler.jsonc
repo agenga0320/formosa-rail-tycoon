@@ -1,0 +1,12 @@
+{
+  // 寶島鐵道大亨：遊戲網頁 + 線上對戰中繼伺服器，一起部署在 Cloudflare Workers
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "formosa-rail-tycoon",
+  "main": "worker/index.js",
+  "compatibility_date": "2025-09-01",
+  "assets": { "directory": ".", "binding": "ASSETS" },
+  "durable_objects": {
+    "bindings": [{ "name": "ROOMS", "class_name": "Room" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }]
+}

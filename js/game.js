@@ -219,7 +219,7 @@ let stepClick = null;
 
 /* ---- 連線狀態（net.js 負責建立連線） ----
  * mode: local 同機輪流 / host 房主（執行遊戲） / client 加入者（只顯示與回答） */
-const NET = { mode: 'local', peer: null, myId: null, conns: new Map(), hostConn: null, pending: new Map(), askSeq: 0, lastTurn: -1, lobby: [], answering: false, ended: false };
+const NET = { mode: 'local', ws: null, myId: null, conns: new Map(), vconns: new Map(), hostConn: null, pending: new Map(), askSeq: 0, lastTurn: -1, lobby: [], answering: false, ended: false };
 function netSend(msg) {
   if (NET.mode !== 'host') return;
   for (const c of NET.conns.values()) if (c.open) { try { c.send(msg); } catch (e) { /* ignore */ } }
