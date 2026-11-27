@@ -20,6 +20,7 @@ const $ = s => document.querySelector(s);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const rint = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
 const pick = a => a[Math.floor(Math.random() * a.length)];
+const shuffle = a => { a = [...a]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 const r10 = x => Math.round(x / 10) * 10;
 
 function fmt(m) {
@@ -262,25 +263,28 @@ function incomeOf(i) {
 }
 
 function newGame(cfg) {
-  const start = G.stationNode.taipei;
+  // 出發順序隨機；每人從不同的本島車站出發（離島不能擲骰，不當起點）
+  const starts = shuffle(STATIONS.filter(s => !s.island).map(s => G.stationNode[s.id]));
   S = {
     ver: 1, year: 1, month: 1, maxYears: cfg.years, speed: cfg.speed, turn: 0, over: false, introDone: false,
-    players: cfg.players.map(p => ({
-      name: p.name, cpu: p.cpu, peer: p.peer || null, color: COLORS[p.slot], cash: 10000, pos: start, cards: ['express', 'express'], skip: false,
+    players: shuffle(cfg.players).map((p, k) => ({
+      name: p.name, cpu: p.cpu, peer: p.peer || null, color: COLORS[p.slot], cash: 10000, pos: starts[k], cards: ['express', 'express'], skip: false,
     })),
     owner: {}, goal: null, goalBonusBase: 0,
     curse: { holder: null, level: 1, turns: 0 },
     log: [],
   };
-  pickGoal(start, 20);
-  log(`📅 第1年 1月，遊戲開始！大家從台北站出發`, 'month');
+  pickGoal(S.players.map(p => p.pos), 20);
+  log(`📅 第1年 1月，遊戲開始！出發順序：${S.players.map(p => `${p.name}（${placeName(p.pos)}）`).join(' → ')}`, 'month');
 }
 
+/* fromNode 可以是一個或多個起點；目的地要離每個起點都夠遠，獎金以最近的起點計 */
 function pickGoal(fromNode, minDist) {
-  const all = STATIONS.map(s => G.stationNode[s.id]).filter(n => n !== S.goal && n !== fromNode);
-  const far = all.filter(n => dist(fromNode, n) >= minDist);
+  const froms = [].concat(fromNode);
+  const all = STATIONS.map(s => G.stationNode[s.id]).filter(n => n !== S.goal && !froms.includes(n));
+  const far = all.filter(n => froms.every(f => dist(f, n) >= minDist));
   const node = pick(far.length ? far : all);
-  S.goalBonusBase = 2500 + dist(fromNode, node) * 120;
+  S.goalBonusBase = 2500 + Math.min(...froms.map(f => dist(f, node))) * 120;
   S.goal = node;
   log(`🚩 新目的地：${placeName(node)}`, 'goal');
 }
@@ -778,7 +782,7 @@ async function gameLoop() {
   if (!S.introDone) {
     S.introDone = true;
     await banner('<small>遊戲開始</small>寶島鐵道大亨', '#e9b949', 1400, 'fanfare');
-    await message('🚩 決定目的地', '大家從 <b>台北站</b> 出發！先用輪盤決定第一個目的地。', anyHuman() && NET.mode !== 'host' ? 0 : 1800);
+    await message('🎲 出發順序與起點', S.players.map((p, k) => `${k + 1}. <b style="color:${p.color}">${p.name}</b>　從 <b>${placeName(p.pos)}</b> 出發`).join('<br>') + '<br>先用輪盤決定第一個目的地。', anyHuman() && NET.mode !== 'host' ? 0 : 2600);
     await roulette(S.goal);
   }
   while (!S.over) {
