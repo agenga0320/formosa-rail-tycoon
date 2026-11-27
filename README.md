@@ -47,6 +47,12 @@ cd android
 
 簽章金鑰放在 `android/release.jks` 與 `android/keystore.properties`（不進版控）；沒有這兩個檔案時 release 版不會簽章。
 
+App 每次開啟或回到前景時會查 GitHub Releases 的最新版；有新版就停止遊戲，必須下載安裝後才能繼續（離線時無法檢查，可照常單機遊玩）。發佈新版：
+
+1. 在 `android/app/build.gradle.kts` 提高 `versionCode` 與 `versionName`
+2. 建置後 commit、push
+3. 建立 tag 為 `v{versionName}` 的 Release，附上 `FormosaRailTycoon-v{versionName}-release.apk`（檔名不能改，App 只接受這個網址）
+
 ## 檔案結構
 
 - `index.html` — 頁面
