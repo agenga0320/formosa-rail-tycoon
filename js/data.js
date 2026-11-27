@@ -111,9 +111,13 @@ const CARDS = {
   redpacket: { name: '紅包卡',   kind: 'red',  price: 0,    desc: '收到一筆紅包（年份越後面越多）' },
   acquire:   { name: '收購卡', kind: 'acquire', price: 2000, desc: '擲骰前，以原價 2 倍收購目前車站的一項對手物件，款項交給原持有人' },
   tax:       { name: '查稅卡',   kind: 'tax',  price: 0,    desc: '向現金最多的對手收取其現金 10%' },
+  remote:    { name: '遙控骰子', kind: 'remote', price: 3000, desc: '不擲骰，自己指定這回合前進 1～6 步；身上已有一張時不能再買' },
 };
-const SHOP_CARDS = ['express', 'limited', 'hsr', 'warp', 'stop', 'charm', 'acquire'];
-const DRAW_WEIGHTS = { express: 28, limited: 14, hsr: 4, warp: 10, near: 4, stop: 10, charm: 8, redpacket: 14, tax: 8, acquire: 6 };
+const SHOP_CARDS = ['express', 'limited', 'hsr', 'warp', 'stop', 'charm', 'acquire', 'remote'];
+const DRAW_WEIGHTS = { express: 28, limited: 14, hsr: 4, warp: 10, near: 4, stop: 10, charm: 8, redpacket: 14, tax: 8, acquire: 6, remote: 6 };
+const REMOTE_MAX_STEPS = 6;
+/* 商店購買限制：遙控骰子身上已有一張就不能再買（從卡片格抽到則不受限） */
+const shopBlocked = (key, cards) => key === 'remote' && cards.includes('remote');
 
 /* 遊戲機場：在對應車站辦理搭機，不代表現實航班。票價單位為萬元。 */
 const AIRPORTS = ['taipei', 'taoyuan', 'taichung', 'kaohsiung', 'hualien', 'taitung'];

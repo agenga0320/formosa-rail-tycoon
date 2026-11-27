@@ -846,7 +846,7 @@ async function playTurn(i) {
     floatAll(p.pos, transport ? transport.icon : '✨', '#fff');
     await note(i, transport ? `${transport.icon} ${p.name} ${transport.verb}抵達 ${placeName(act.node)}（票價 ${fmt(act.fare)}）${act.type === 'boat' ? '，下一回合暫停一次' : ''}` : `✨ ${p.name} 瞬間移動到了 ${placeName(act.node)}`, 'good');
   } else {
-    const total = await rollDice(act.dice);
+    const total = await rollDice(act.dice, act.fixed);
     const ends = reachable(p.pos, total);
     if (p.cpu) {
       await moveAlong(i, ends.get(cpuChooseEnd(i, ends)), true);
@@ -861,12 +861,14 @@ async function playTurn(i) {
   render();
 }
 
-async function rollDice(n) {
-  const vals = Array.from({ length: n }, () => rint(1, 6));
+/* fixed：遙控骰子指定的步數（不擲骰） */
+async function rollDice(n, fixed) {
+  const vals = fixed ? [fixed] : Array.from({ length: n }, () => rint(1, 6));
   const sum = vals.reduce((a, b) => a + b, 0);
   setStatus('');
   netSend({ t: 'dice', vals });
-  log(`🎲 ${S.players[S.turn].name} 擲出 ${vals.join('+')}${n > 1 ? ' = ' + sum : ''}`);
+  if (fixed) log(`🎮 ${S.players[S.turn].name} 用遙控骰子指定前進 ${fixed} 步`);
+  else log(`🎲 ${S.players[S.turn].name} 擲出 ${vals.join('+')}${n > 1 ? ' = ' + sum : ''}`);
   await diceResultLocal(vals);
   return sum;
 }
@@ -1224,7 +1226,8 @@ async function applyCard(i, idx, target) {
   if (!Number.isInteger(idx) || !c) return null;
   const acquisition = c.kind === 'acquire' ? acquisitionOptions(i).find(o => o.key === target) : null;
   if (c.kind === 'acquire' && (!acquisition || p.cash < acquisition.price)) return null;
-  if (G.nodes[p.pos].island && c.kind === 'move') return null;
+  if (G.nodes[p.pos].island && (c.kind === 'move' || c.kind === 'remote')) return null;
+  if (c.kind === 'remote' && !(Number.isInteger(target) && target >= 1 && target <= REMOTE_MAX_STEPS)) return null;
   if (key === 'charm' && S.curse.holder !== i) return null;
   if (c.kind === 'stop' && (target == null || target === i || !S.players[target])) return null;
   p.cards.splice(idx, 1);
@@ -1238,6 +1241,7 @@ async function applyCard(i, idx, target) {
   await message('🃏 使用卡片', `${p.name} 使用了 <b>「${c.name}」</b>`, 1100 * (p.cpu ? spd() : 1) + 200);
   switch (c.kind) {
     case 'move': return { type: 'roll', dice: c.dice };
+    case 'remote': return { type: 'roll', dice: 1, fixed: target };
     case 'warp': {
       const opts = STATIONS.map(s => G.stationNode[s.id]).filter(n => n !== p.pos);
       return { type: 'warp', node: pick(opts) };
@@ -1285,6 +1289,13 @@ async function applyCard(i, idx, target) {
   return null;
 }
 
+/* 遙控骰子：選要前進幾步 */
+function chooseSteps(i) {
+  const p = S.players[i];
+  return modal(`<h3>🎮 遙控骰子</h3><p>要前進幾步？</p><p class="hint">距目的地 ${distanceLabel(p.pos, S.goal)}。選好後照平常一樣一步一步走，路過目的地會自動停下。</p>`,
+    [...Array.from({ length: REMOTE_MAX_STEPS }, (_, k) => ({ label: `${k + 1} 步`, value: k + 1, cls: 'primary' })), { label: '取消', value: null }]);
+}
+
 function chooseTarget(i) {
   const btns = S.players.map((q, j) => ({ label: `${j + 1}. ${q.name}`, value: j })).filter(b => b.value !== i);
   btns.push({ label: '取消', value: null });
@@ -1295,8 +1306,8 @@ function chooseCard(i) {
   const p = S.players[i];
   const rows = p.cards.map((k, idx) => {
     const c = CARDS[k];
-    const dis = (k === 'charm' && S.curse.holder !== i) || (G.nodes[p.pos].island && c.kind === 'move') || (c.kind === 'acquire' && !acquisitionOptions(i).some(o=>p.cash>=o.price));
-    return `<div class="cardRow"><div class="cardIco">${c.kind === 'move' ? '🚄' : c.kind === 'warp' || c.kind === 'near' ? '✨' : c.kind === 'acquire' ? '🤝' : c.kind === 'stop' ? '⛔' : c.kind === 'charm' ? '🧧' : '💰'}</div>
+    const dis = (k === 'charm' && S.curse.holder !== i) || (G.nodes[p.pos].island && (c.kind === 'move' || c.kind === 'remote')) || (c.kind === 'acquire' && !acquisitionOptions(i).some(o=>p.cash>=o.price));
+    return `<div class="cardRow"><div class="cardIco">${c.kind === 'move' ? '🚄' : c.kind === 'remote' ? '🎮' : c.kind === 'warp' || c.kind === 'near' ? '✨' : c.kind === 'acquire' ? '🤝' : c.kind === 'stop' ? '⛔' : c.kind === 'charm' ? '🧧' : '💰'}</div>
       <div class="cardTxt"><b>${c.name}</b><small>${c.desc}</small></div>
       <button class="btn sm primary" data-use="${idx}" type="button" ${dis ? 'disabled title="目前無法使用這張卡片"' : ''}>使用</button></div>`;
   }).join('');
@@ -1377,6 +1388,7 @@ async function localMenu(i) {
       let target = null;
       if (CARDS[p.cards[idx]].kind === 'acquire') { target = await chooseAcquisition(i); if (target == null) continue; }
       if (CARDS[p.cards[idx]].kind === 'stop') { target = await chooseTarget(i); if (target == null) continue; }
+      if (CARDS[p.cards[idx]].kind === 'remote') { target = await chooseSteps(i); if (target == null) continue; }
       return { type: 'card', idx, target };
     }
   }
@@ -1520,7 +1532,7 @@ async function humanStation(i, s) {
       if (monoOwner(s.id) === i) { log(`★ ${p.name} 獨佔${s.name}站！`, 'good'); toastAll(`★ ${p.name} 獨佔${s.name}站！收益加倍`, 'good'); }
     } else if (a.card && SHOP_CARDS.includes(a.card) && s.shop) {
       const c = CARDS[a.card];
-      if (p.cash < c.price || p.cards.length >= 8) continue;
+      if (p.cash < c.price || p.cards.length >= 8 || shopBlocked(a.card, p.cards)) continue;
       p.cash -= c.price;
       p.cards.push(a.card);
       log(`🃏 ${p.name} 買了「${c.name}」`);
@@ -1554,9 +1566,9 @@ function localStation(i, s) {
       if (s.shop) {
         h += '<h4>🃏 卡片商店</h4><div class="cards">';
         SHOP_CARDS.forEach(k => {
-          const c = CARDS[k];
+          const c = CARDS[k], owned = shopBlocked(k, p.cards);
           h += `<div class="cardRow"><div class="cardTxt"><b>${c.name}</b> <small>${fmt(c.price)}</small><small>${c.desc}</small></div>
-            <button class="btn sm" data-card="${k}" type="button" ${p.cash < c.price || p.cards.length >= 8 ? 'disabled' : ''}>買</button></div>`;
+            <button class="btn sm" data-card="${k}" type="button" ${p.cash < c.price || p.cards.length >= 8 || owned ? 'disabled' : ''}>${owned ? '已持有' : '買'}</button></div>`;
         });
         h += `</div><p class="hint">手牌 ${p.cards.length}/8</p>`;
       }
@@ -1631,6 +1643,9 @@ async function cpuPreRoll(i) {
     if (lead >= 0 && ld < d && ld <= 12) await useKey('stop', lead);
   }
   render();
+  // 遙控骰子：目的地在 6 步以內就直接開過去
+  const railDist = distFrom(p.pos)[S.goal];
+  if (p.cards.includes('remote') && !G.nodes[p.pos].island && railDist >= 1 && railDist <= REMOTE_MAX_STEPS) return useKey('remote', railDist);
   if (d > 8 && p.cards.includes('near')) return useKey('near');
   const transport = [...flightOptions(i).map(f => ({ ...f, type: 'flight' })), ...boatOptions(i).map(f => ({ ...f, type: 'boat' }))]
     .map(f => ({ ...f, effectiveDistance: f.remaining + (f.type === 'boat' ? 4 : 0) }))
@@ -1688,6 +1703,7 @@ async function cpuShop(i) {
   const buy = async key => { p.cash -= CARDS[key].price; p.cards.push(key); await note(i, `🃏 ${p.name} 買了「${CARDS[key].name}」`); };
   if (S.curse.holder === i && !p.cards.includes('charm') && p.cash > CARDS.charm.price + reserve) await buy('charm');
   if (p.cards.length < 8 && !p.cards.includes('acquire') && p.cash > CARDS.acquire.price + reserve * 3 && Object.values(S.owner).some(owner=>owner!==i)) await buy('acquire');
+  if (p.cards.length < 8 && !shopBlocked('remote', p.cards) && p.cash > CARDS.remote.price + reserve * 3) await buy('remote');
   if (p.cards.length < 4) {
     if (p.cash > CARDS.hsr.price + reserve * 4) await buy('hsr');
     else if (p.cash > CARDS.limited.price + reserve * 2) await buy('limited');
@@ -1710,7 +1726,7 @@ const RULES = `
 <p><b>🏦 負債變賣：</b>現金變負時，玩家逐項選擇物件，以原價一半變賣，直到還清或無物件可賣。售出物件重新開放購買，獨佔收益也重新計算；賣完仍不足則保留負債。電腦或斷線代打優先出售基礎年收益較低的物件。</p>
 <p><b>🤝 收購卡：</b>擲骰前，在目前車站選一項對手物件，付原價 2 倍給原持有人並取得所有權。不足現金、無有效目標或取消不消耗卡片。可由卡片格抽得或在商店以 2000 萬購買。</p>
 <p><b>🌧️ 衰尾道人：</b>有人抵達目的地時，離目的地最遠的玩家會被衰尾道人纏上，每回合亂花錢、丟卡片、賤賣物件。久了還會變成更恐怖的<b>大衰尾 ⛈️</b>。移動時經過或停在其他玩家所在的格子，就能把它甩給對方！平安符可以直接趕走它。</p>
-<p><b>🃏 卡片：</b>莒光號／自強號／高鐵卡可以一次擲多顆骰子；停駛卡讓對手停一回合；瞬移卡、導航卡可以傳送；紅包卡、查稅卡可以賺錢。</p>
+<p><b>🃏 卡片：</b>莒光號／自強號／高鐵卡可以一次擲多顆骰子；<b>遙控骰子</b>不擲骰，自己指定前進 1～6 步（卡片格抽得，或在商店以 3000 萬購買，但身上已有一張時不能再買）；停駛卡讓對手停一回合；瞬移卡、導航卡可以傳送；紅包卡、查稅卡可以賺錢。</p>
 <p><b>其他：</b>每個月有機率發生颱風、美食爆紅等事件。遊戲每回合自動存檔。左側的 ${twIcon(15)} 按鈕可以切換全國地圖。</p>
 </div>`;
 
