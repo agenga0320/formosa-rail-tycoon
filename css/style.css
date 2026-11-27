@@ -109,6 +109,13 @@ small.you { background: var(--gold); color: #1d2433; border-radius: 4px; padding
 @keyframes blink { 50% { opacity: .2; } }
 .big { font-size: 22px; color: var(--gold2); }
 
+/* ---- 縮小的下方視窗（App 版點地圖時） ---- */
+#cmd.mini, #msg.mini { width: auto; right: auto; padding: 7px 14px; cursor: pointer; }
+#cmd.mini > :not(.cmdTitle), #msg.mini > :not(.msgTitle) { display: none; }
+#cmd.mini .cmdTitle, #msg.mini .msgTitle { margin: 0; font-size: 14px; }
+#cmd.mini .cmdTitle small { display: none; }
+#cmd.mini::after, #msg.mini::after { content: '▲ 展開'; display: block; margin-top: 2px; font-size: 12px; color: var(--gold2); }
+
 /* ---- 橫幅 ---- */
 #banner { position: absolute; left: 0; right: 0; top: 36%; pointer-events: none; opacity: 0; z-index: 40; }
 #banner.show { animation: bannerAnim 1.7s ease-in-out forwards; }

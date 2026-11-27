@@ -610,7 +610,7 @@ function messageLocal(title, body, autoMs) {
   return new Promise(res => {
     const m = $('#msg');
     m.innerHTML = `${title ? `<div class="msgTitle">${title}</div>` : ''}<div class="msgBody">${body}</div><div class="msgNext">▼</div>`;
-    m.classList.remove('hidden');
+    m.classList.remove('hidden', 'mini');
     m.classList.remove('pop'); void m.offsetWidth; m.classList.add('pop');
     sfx(title && /衰尾/.test(title) ? 'curse' : 'msg');
     const seq = ++msgSeq;
@@ -1758,6 +1758,8 @@ function init() {
       else if (stepEl.dataset.end != null && actResolve) actResolve(+stepEl.dataset.end);
       return;
     }
+    // App 版螢幕小：點地圖時把下方視窗縮成小標籤，方便看地圖
+    if (window.AndroidApp) ['#cmd', '#msg'].forEach(s => { if (!$(s).classList.contains('hidden')) $(s).classList.add('mini'); });
     const tr = e.target.closest('[data-tr]');
     if (tr && $('#modal').classList.contains('hidden')) { showRoutes(tr.dataset.sid, tr.dataset.tr); return; }
     const st = e.target.closest('.st');
@@ -1768,6 +1770,13 @@ function init() {
     if (el && S && $('#modal').classList.contains('hidden')) { const i = +el.dataset.p; focusNode(S.players[i].pos, true); showProps(i); }
   });
   $('#modal').addEventListener('click', e => { if (e.target === e.currentTarget) dismissModal(); });
+  // 縮小中的下方視窗：這一下只負責展開，不會按到按鈕或跳過訊息
+  ['#cmd', '#msg'].forEach(s => $(s).addEventListener('click', e => {
+    if (!e.currentTarget.classList.contains('mini')) return;
+    e.currentTarget.classList.remove('mini');
+    e.stopImmediatePropagation();
+    e.preventDefault();
+  }, true));
   $('#btnStart').onclick = startFromSetup;
   $('#btnContinue').onclick = () => {
     const s = loadSave();
