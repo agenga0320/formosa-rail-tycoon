@@ -34,6 +34,7 @@ function lockNetForm(locked) {
   $('#btnJoin').disabled = locked;
   $('#myName').disabled = locked;
   $('#joinCode').disabled = locked;
+  $('#btnHome').classList.toggle('hidden', locked); // 已在房間裡就不能回首頁，避免留下幽靈玩家
   document.querySelectorAll('.tab').forEach(b => { b.disabled = locked; });
 }
 
@@ -285,7 +286,8 @@ function netInit() {
   $('#myName').addEventListener('change', () => { try { localStorage.setItem('formosa-rail-tycoon-name', myName()); } catch (e) { /* ignore */ } });
   const room = new URLSearchParams(location.search).get('room');
   if (room) {
-    switchTab('online');
+    // 從邀請連結進來：跳過首頁，直接到加入房間
+    showSetup('online');
     $('#joinCode').value = room.toUpperCase().slice(0, 4);
   }
 }

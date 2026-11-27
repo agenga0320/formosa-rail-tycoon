@@ -234,6 +234,19 @@ small.you { background: var(--gold); color: #1d2433; border-radius: 4px; padding
 .sw.blue { background: #2f6fde; } .sw.red { background: #e0453a; } .sw.yellow { background: #f2b705; }
 .sw.st { border: 2px solid #fff; background: #1f3a5f; }
 
+/* ---- 首頁 ---- */
+.home { background: radial-gradient(circle at 50% 35%, rgba(15, 30, 58, .6), rgba(5, 10, 25, .88)); }
+.homeBox { max-width: 430px; text-align: center; padding: 14px 20px 20px; }
+.homeTop { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--muted); }
+.homeLogo { font-size: 56px; line-height: 1; margin-top: 8px; }
+.homeBox h1 { margin: 6px 0 0; font-size: 34px; color: var(--gold2); letter-spacing: 4px; }
+.homeMenu { display: grid; gap: 10px; margin-top: 4px; }
+.homeBtn { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 100%; padding: 12px 16px; font-size: 18px; font-weight: 800; }
+.homeBtn small { font-size: 12px; font-weight: 400; opacity: .8; }
+.homeRow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.homeRow .homeBtn { font-size: 14px; padding: 10px 4px; }
+.backBtn { display: block; margin: 0 0 6px; }
+
 /* ---- 開始畫面 ---- */
 .setupBox h1 { margin: 0; font-size: 28px; color: var(--gold2); letter-spacing: 2px; }
 .sub { color: var(--muted); margin: 6px 0 14px; }
@@ -344,10 +357,17 @@ select option { background: #0f1e3a; }
 .tileLegend.yellow { background: #f2b705; color: #17233b; }
 .tileLegend.station { background: white; color: #1f3a5f; }
 #cmd.stepWin .directionBtn { justify-content: flex-start; text-align: left; }
-.tok { pointer-events: none; }
-.tok circle:nth-of-type(2) { stroke: #fff; stroke-width: 3; }
-.tok.cur circle:nth-of-type(2) { stroke: #ffd76a; stroke-width: 4; }
-.tok text { font-size: 13px; text-anchor: middle; }
+/* 棋子（大頭針） */
+.tok, .tokHalo { pointer-events: none; }
+.tokShadow { fill: rgba(0, 0, 0, .35); }
+.tokTail, .tokHead { stroke: #fff; stroke-width: 3; stroke-linejoin: round; }
+.tokNum { fill: #fff; font-size: 17px; font-weight: 900; text-anchor: middle; paint-order: stroke; stroke: rgba(0, 0, 0, .35); stroke-width: 2px; }
+.tok.cur .tokHead { stroke: #ffd76a; stroke-width: 4; }
+.tok.cur .tokPin { animation: tokBounce .9s ease-in-out infinite; }
+@keyframes tokBounce { 50% { transform: translateY(-7px); } }
+.tokName { font-size: 16px; font-weight: 900; text-anchor: middle; fill: #fff; paint-order: stroke; stroke: var(--pc); stroke-width: 6px; stroke-linejoin: round; }
+.tokHalo { fill: none; stroke-width: 5; transform-box: fill-box; transform-origin: center; animation: tokHalo 1.3s ease-out infinite; }
+@keyframes tokHalo { from { transform: scale(.5); opacity: 1; } to { transform: scale(1.9); opacity: 0; } }
 .curseIco { font-size: 17px; pointer-events: none; }
 .floatTxt { font-size: 20px; font-weight: 900; text-anchor: middle; paint-order: stroke; stroke: #0f1e3a; stroke-width: 5px; pointer-events: none; animation: floatUp 1.6s ease-out forwards; }
 @keyframes floatUp { from { transform: translateY(0); opacity: 1; } to { transform: translateY(-46px); opacity: 0; } }

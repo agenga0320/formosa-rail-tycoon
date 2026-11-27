@@ -356,20 +356,29 @@ function renderMapDyn() {
   renderTokens();
 }
 
+/* 棋子：插在格子上的大頭針，頭上是玩家編號（和玩家資訊卡的編號一樣）。
+ * 目前玩家的棋子會彈跳、顯示名字，腳下有擴散的光圈；同一格有多人時左右排開。 */
 function renderTokens() {
   const byNode = {};
   S.players.forEach((p, i) => (byNode[p.pos] = byNode[p.pos] || []).push(i));
-  let h = '';
+  let halo = '', pins = '', top = '';
   for (const node of Object.keys(byNode)) {
     const arr = byNode[node], n = G.nodes[node];
     arr.forEach((i, k) => {
-      const off = arr.length > 1 ? OFFS[k] : [0, 0];
-      const p = S.players[i], x = n.x + off[0], y = n.y + off[1];
-      h += `<g class="tok${i === S.turn ? ' cur' : ''}"><circle cx="${x}" cy="${y + 2}" r="12" fill="rgba(0,0,0,.25)"/><circle cx="${x}" cy="${y}" r="12" fill="${p.color}"/><text x="${x}" y="${y + 4.5}">🚃</text></g>`;
-      if (S.curse.holder === i) h += `<text x="${x + 7}" y="${y - 12}" class="curseIco">${S.curse.level > 1 ? '⛈️' : '🌧️'}</text>`;
+      const p = S.players[i], cur = i === S.turn;
+      const x = n.x + (arr.length > 1 ? (k - (arr.length - 1) / 2) * 22 : 0), y = n.y;
+      const curse = S.curse.holder === i ? `<text x="${x + 15}" y="${y - 38}" class="curseIco">${S.curse.level > 1 ? '⛈️' : '🌧️'}</text>` : '';
+      const g = `<g class="tok${cur ? ' cur' : ''}" style="--pc:${p.color}">
+        <ellipse cx="${x}" cy="${y + 1}" rx="9" ry="4" class="tokShadow"/>
+        <g class="tokPin"><path d="M${x - 9} ${y - 24} L${x} ${y - 3} L${x + 9} ${y - 24} Z" fill="${p.color}" class="tokTail"/>
+        <circle cx="${x}" cy="${y - 29}" r="14" fill="${p.color}" class="tokHead"/>
+        <text x="${x}" y="${y - 23.5}" class="tokNum">${i + 1}</text>${curse}</g>
+        ${cur ? `<text x="${x}" y="${y - 52}" class="tokName">${p.name}</text>` : ''}</g>`;
+      if (cur) { halo += `<circle cx="${x}" cy="${y}" r="16" class="tokHalo" stroke="${p.color}"/>`; top = g; } else pins += g;
     });
   }
-  $('#lyTok').innerHTML = h;
+  // 目前玩家畫在最上層，不會被別人的棋子擋住
+  $('#lyTok').innerHTML = halo + pins + top;
 }
 
 /* 地圖上的浮動文字（例如 +500萬） */
@@ -1705,10 +1714,39 @@ const RULES = `
 <p><b>其他：</b>每個月有機率發生颱風、美食爆紅等事件。遊戲每回合自動存檔。左側的 ${twIcon(15)} 按鈕可以切換全國地圖。</p>
 </div>`;
 
-function showSetup() {
+/* 首頁：繼續上次／開始遊戲／線上對戰／遊戲紀錄／設定／規則（登入與遊戲紀錄之後加上） */
+function showHome() {
   const saved = loadSave();
-  $('#btnContinue').style.display = saved ? '' : 'none';
-  if (saved) $('#btnContinue').textContent = `繼續上次（第${saved.year}年${saved.month}月）`;
+  $('#hContinue').classList.toggle('hidden', !saved);
+  if (saved) $('#hContinue').innerHTML = `▶ 繼續上次<small>第${saved.year}年 ${saved.month}月・${saved.players.map(p => p.name).join('、')}</small>`;
+  $('#setup').classList.add('hidden');
+  $('#home').classList.remove('hidden');
+}
+
+async function showSettings() {
+  for (;;) {
+    const v = await modal('<h3>⚙️ 設定</h3><p class="hint">之後的帳號、遊戲紀錄等設定也會放在這裡。</p>',
+      [{ label: `🎵 背景音樂：${SND.bgmOn ? '開' : '關'}`, value: 'bgm' }, { label: `🔔 音效：${SND.sfxOn ? '開' : '關'}`, value: 'sfx' },
+        { label: '完成', value: null, cls: 'primary' }]);
+    if (v === 'bgm') toggleBgm();
+    else if (v === 'sfx') toggleSfx();
+    else break;
+    $('#btnSound').textContent = soundIcon();
+  }
+}
+
+function continueSaved() {
+  const s = loadSave();
+  if (!s) return;
+  S = s;
+  // 線上對戰的存檔：遠端玩家改由電腦代打
+  S.players.forEach(p => { if (p.peer || p.offline) { p.peer = null; p.offline = false; p.cpu = true; } });
+  $('#home').classList.add('hidden');
+  log('💾 讀取存檔，繼續遊戲', 'month');
+  gameLoop();
+}
+
+function showSetup(mode = 'local') {
   const rows = [0, 1, 2, 3].map(k => `
     <div class="prow">
       <span class="chip" style="background:${COLORS[k]}">${k + 1}</span>
@@ -1720,7 +1758,9 @@ function showSetup() {
       </select>
     </div>`).join('');
   $('#pRows').innerHTML = rows;
+  $('#home').classList.add('hidden');
   $('#setup').classList.remove('hidden');
+  if (typeof switchTab === 'function') switchTab(mode);
 }
 
 function startFromSetup() {
@@ -1791,20 +1831,16 @@ function init() {
     e.preventDefault();
   }, true));
   $('#btnStart').onclick = startFromSetup;
-  $('#btnContinue').onclick = () => {
-    const s = loadSave();
-    if (!s) return;
-    S = s;
-    // 線上對戰的存檔：遠端玩家改由電腦代打
-    S.players.forEach(p => { if (p.peer || p.offline) { p.peer = null; p.offline = false; p.cpu = true; } });
-    $('#setup').classList.add('hidden');
-    log('💾 讀取存檔，繼續遊戲', 'month');
-    gameLoop();
-  };
+  $('#hContinue').onclick = continueSaved;
+  $('#hLocal').onclick = () => showSetup('local');
+  $('#hOnline').onclick = () => showSetup('online');
+  $('#hSettings').onclick = showSettings;
+  $('#hRules').onclick = () => modal(RULES, [{ label: '了解', value: true, cls: 'primary' }]);
+  $('#btnHome').onclick = showHome;
   // Android 版發現新版時會帶 ?update=版本 重新載入，必須更新才能遊玩
   const upd = new URLSearchParams(location.search).get('update');
   if (upd && window.AndroidApp && /^\d+\.\d+\.\d+$/.test(upd)) { showAppUpdate(upd); return; }
-  showSetup();
+  showHome();
   if (typeof netInit === 'function') netInit();
 }
 

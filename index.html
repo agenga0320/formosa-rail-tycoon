@@ -54,8 +54,32 @@
   <div id="modal" class="overlay hidden"><div class="box win"></div></div>
   <div id="toasts"></div>
 
+  <!-- 首頁：之後的登入、遊戲紀錄、設定都從這裡進入 -->
+  <div id="home" class="overlay home hidden">
+    <div class="box win homeBox">
+      <div class="homeTop">
+        <span class="acct">👤 訪客</span>
+        <button id="hLogin" class="btn sm" type="button" disabled title="即將推出">登入</button>
+      </div>
+      <div class="homeLogo">🚂</div>
+      <h1>寶島鐵道大亨</h1>
+      <p class="sub">搭火車環島、買下全台名產，成為台灣第一的鐵道大亨！</p>
+      <div class="homeMenu">
+        <button id="hContinue" class="btn primary homeBtn hidden" type="button"></button>
+        <button id="hLocal" class="btn primary homeBtn" type="button">🎮 開始遊戲<small>同一台裝置輪流玩，可以加入電腦</small></button>
+        <button id="hOnline" class="btn homeBtn" type="button">🌐 線上對戰<small>和朋友各用自己的手機或電腦</small></button>
+        <div class="homeRow">
+          <button id="hRecords" class="btn homeBtn" type="button" disabled>🏆 遊戲紀錄<small>即將推出</small></button>
+          <button id="hSettings" class="btn homeBtn" type="button">⚙️ 設定<small>音樂・音效</small></button>
+          <button id="hRules" class="btn homeBtn" type="button">📖 規則<small>怎麼玩</small></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="setup" class="overlay hidden">
     <div class="box win setupBox">
+      <button id="btnHome" class="linkBtn backBtn" type="button">← 回首頁</button>
       <h1>🚂 寶島鐵道大亨</h1>
       <p class="sub">搭火車環島、買下全台名產，成為台灣第一的鐵道大亨！ <button id="btnRules2" class="linkBtn" type="button">遊戲規則</button></p>
       <div class="tabs">
@@ -76,7 +100,6 @@
         <div id="setupErr" class="err"></div>
         <div class="btns">
           <button id="btnStart" class="btn primary" type="button">開始遊戲</button>
-          <button id="btnContinue" class="btn" type="button">繼續上次</button>
         </div>
       </div>
 
