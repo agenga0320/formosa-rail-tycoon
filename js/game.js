@@ -1755,7 +1755,7 @@ function init() {
   $('#btnSound').onclick = () => { toggleMute(); $('#btnSound').textContent = soundIcon(); };
   $('#btnLogClose').onclick = () => $('#logDrawer').classList.add('hidden');
   $('#btnMenu').onclick = async () => {
-    const v = await modal(`<h3>☰ 選單</h3><p class="hint">${NET.mode === 'host' ? '你是房主：離開會讓所有人的遊戲中斷。' : NET.mode === 'client' ? '離開後，用同樣的名字重新加入就能接回位置。' : '遊戲每回合開始時自動存檔，回到標題後可以「繼續上次」。'}</p>`,
+    const v = await modal(`<h3>☰ 選單</h3><p class="hint">${NET.mode === 'host' ? '你是房主：離開會讓所有人的遊戲中斷。' : NET.mode === 'client' ? '遊戲在伺服器上進行，離開不會中斷別人；用同樣的名字重新加入就能接回位置。' : '遊戲每回合開始時自動存檔，回到標題後可以「繼續上次」。'}</p>`,
       [{ label: `🎵 音樂：${SND.bgmOn ? '開' : '關'}`, value: 'bgm' }, { label: `🔔 音效：${SND.sfxOn ? '開' : '關'}`, value: 'sfx' },
         { label: '📖 遊戲規則', value: 'rules' }, { label: '🏠 回到標題', value: 'title' }, { label: '取消', value: null, cls: 'primary' }]);
     if (v === 'bgm') { toggleBgm(); toast(`🎵 背景音樂已${SND.bgmOn ? '開啟' : '關閉'}`); }

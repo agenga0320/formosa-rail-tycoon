@@ -1,19 +1,19 @@
 'use strict';
-/* 寶島鐵道大亨 — 線上對戰（房間代碼 + Cloudflare WebSocket 中繼）
- * 房主的瀏覽器執行整個遊戲；加入者只負責顯示畫面、回答自己的操作。
- * 伺服器（worker/index.js）只負責在房主和加入者之間轉送訊息。
+/* 寶島鐵道大亨 — 線上對戰（瀏覽器端）
+ * 遊戲在 Cloudflare 的伺服器上執行（worker/index.js + server/room.js，用的是同一份 game.js）。
+ * 每位玩家的瀏覽器都只負責顯示畫面、回答自己的操作；誰離開都不會讓遊戲中斷。
  */
 const ROOM_SERVER = 'https://formosa-rail-tycoon.formosa-rail-tycoon.workers.dev';
 const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-const MAX_HUMANS = 4;
+const MAX_HUMANS = 4, HEARTBEAT_MS = 3000, AWAY_MS = 20000;
 
 /* 從 Cloudflare 本身開啟時用同一個網址；從 GitHub Pages、Android App 開啟時連到 ROOM_SERVER */
+const onServer = () => location.protocol.startsWith('http') && (location.hostname.endsWith('.workers.dev') || location.port === '8787');
 function roomURL(code, params) {
-  const same = location.protocol.startsWith('http') && (location.hostname.endsWith('.workers.dev') || location.port === '8787');
-  const base = new URL(same ? location.origin : ROOM_SERVER);
+  const base = new URL(onServer() ? location.origin : ROOM_SERVER);
   base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
   base.pathname = '/room/' + code;
-  for (const [k, v] of Object.entries(params)) if (v) base.searchParams.set(k, v);
+  for (const [k, v] of Object.entries(params || {})) if (v) base.searchParams.set(k, v);
   return base.href;
 }
 const wsSend = (ws, obj) => { if (ws && ws.readyState === 1) { try { ws.send(JSON.stringify(obj)); } catch (e) { /* ignore */ } } };
@@ -37,299 +37,48 @@ function lockNetForm(locked) {
   document.querySelectorAll('.tab').forEach(b => { b.disabled = locked; });
 }
 
-/* ================= 房主 ================= */
-function hostRoom() {
-  netError('');
-  lockNetForm(true);
-  $('#lobby').innerHTML = '<p class="hint">建立房間中…</p>';
-  const name = myName();
-  const failed = msg => { netError(msg); lockNetForm(false); $('#lobby').innerHTML = ''; };
-  const tryOpen = attempt => hostConnect(genCode(), null, {
-    ok: code => {
-      NET.mode = 'host';
-      NET.code = code;
-      NET.lobby = [{ peer: null, name }];
-      $('#netForm').classList.add('hidden');
-      renderHostLobby();
-    },
-    taken: () => attempt < 5 ? tryOpen(attempt + 1) : failed('建立房間失敗，請稍後再試'),
-    fail: () => failed('無法連上連線伺服器，請確認網路後再試'),
-  });
-  if (!NET.hbTimer) NET.hbTimer = setInterval(hostHeartbeat, HEARTBEAT_MS);
-  tryOpen(0);
-}
+/* ================= 建立／加入房間 ================= */
+function hostRoom() { startOnline(genCode(), true); }
 
-/* 房主和伺服器之間只有一條 WebSocket；每位加入者在房主這邊是一個「虛擬連線」 */
-function makeConn(id) {
-  const h = {};
-  const c = {
-    peer: id, open: true,
-    on(ev, fn) { h[ev] = fn; },
-    emit(ev, arg) {
-      if (ev === 'close') { if (!c.open) return; c.open = false; }
-      if (h[ev]) h[ev](arg);
-    },
-    send(msg) { if (c.open) wsSend(NET.ws, { to: id, msg }); },
-    close() { if (!c.open) return; wsSend(NET.ws, { to: id, close: true }); c.emit('close'); },
-  };
-  return c;
-}
-
-function hostConnect(code, token, cb) {
-  const ws = new WebSocket(roomURL(code, { role: 'host', token }));
-  let welcomed = false;
-  ws.onmessage = e => {
-    let m;
-    try { m = JSON.parse(e.data); } catch (err) { return; }
-    if (m.sys === 'error') { if (m.reason === 'taken') cb.taken(); else cb.fail(); return; }
-    if (m.sys === 'welcome') {
-      welcomed = true;
-      NET.ws = ws;
-      NET.token = m.token;
-      NET.retry = 0;
-      cb.ok(code, m.clients || []);
-      return;
-    }
-    if (NET.ws !== ws) return;
-    if (m.sys === 'open') { const conn = makeConn(m.id); NET.vconns.set(m.id, conn); setupHostConn(conn); return; }
-    const conn = NET.vconns.get(m.id);
-    if (!conn) return;
-    if (m.sys === 'data') conn.emit('data', m.msg);
-    else if (m.sys === 'close') { NET.vconns.delete(m.id); conn.emit('close'); }
-  };
-  ws.onclose = () => {
-    if (!welcomed) { if (!NET.code) cb.fail(); return; }
-    if (NET.ws !== ws || NET.closing) return;
-    NET.ws = null;
-    if (S && !S.over) toastAll('⚠️ 房主連線中斷，重新連線中…', 'bad');
-    hostReconnect();
-  };
-}
-
-/* 房主斷線（換網路、手機休眠）時自動接回同一個房間，加入者不用重新進來 */
-function hostReconnect() {
-  const n = NET.retry = (NET.retry || 0) + 1;
-  setTimeout(() => hostConnect(NET.code, NET.token, {
-    ok: (code, clients) => {
-      const alive = new Set(clients);
-      for (const [id, conn] of [...NET.vconns]) {
-        if (alive.has(id)) conn._lastSeen = Date.now();
-        else { NET.vconns.delete(id); conn.emit('close'); }
-      }
-      toast('🔌 已重新連上伺服器', 'good');
-      if (S) {
-        render();
-        // 斷線期間送出的提問可能沒送到，再送一次（加入者會忽略重複的）
-        for (const [id, pd] of NET.pending) { const p = S.players[pd.i]; if (p && p.peer) sendTo(p.peer, { t: 'ask', id, kind: pd.kind, data: pd.data }); }
-      } else renderHostLobby();
-    },
-    taken: () => toast('⚠️ 房間已失效，請重新建立房間', 'bad'),
-    fail: () => hostReconnect(),
-  }), backoff(n - 1));
-}
-
-function setupHostConn(conn) {
-  conn._lastSeen = Date.now();
-  conn.on('data', msg => {
-    conn._lastSeen = Date.now();
-    if (conn._away) { conn._away = false; restoreOnline(conn); }
-    hostHandle(conn, msg);
-  });
-  conn.on('close', () => hostConnClosed(conn));
-  conn.on('error', () => hostConnClosed(conn));
-}
-
-/* 心跳：手機網路斷線不一定會馬上觸發 close，所以每 3 秒 ping 一次。
- * 20 秒沒回應就先由電腦代打；之後又收到訊息就自動交還。 */
-const HEARTBEAT_MS = 3000, AWAY_MS = 20000;
-function hostHeartbeat() {
-  if (NET.mode !== 'host') return;
-  const now = Date.now();
-  for (const conn of [...NET.conns.values()]) {
-    try { if (conn.open) conn.send({ t: 'ping' }); } catch (e) { /* ignore */ }
-    if (!conn._away && now - conn._lastSeen > AWAY_MS) {
-      conn._away = true;
-      if (S) markOffline(conn.peer);
-      else { NET.conns.delete(conn.peer); NET.lobby = NET.lobby.filter(l => l.peer !== conn.peer); renderHostLobby(); try { conn.close(); } catch (e) { /* ignore */ } }
-    }
-  }
-}
-
-function markOffline(peerId) {
-  S.players.forEach((p, i) => {
-    if (p.peer !== peerId) return;
-    p.peer = null; p.cpu = true; p.offline = true; p.awayPeer = peerId;
-    log(`📴 ${p.name} 離線了，改由電腦代打（回來後會自動接手）`, 'bad');
-    toastAll(`📴 ${p.name} 離線了，改由電腦代打`, 'bad');
-    for (const [id, pd] of NET.pending) {
-      if (pd.i === i) { NET.pending.delete(id); sendTo(peerId, { t: 'cancel', id }); pd.res(askFallback(pd.kind, pd.data)); }
-    }
-  });
-  if (!S.over) render();
-}
-
-function restoreOnline(conn) {
-  if (!S) return;
-  if (!NET.conns.has(conn.peer)) NET.conns.set(conn.peer, conn);
-  S.players.forEach(p => {
-    if (!(p.offline && p.awayPeer === conn.peer)) return;
-    p.cpu = false; p.offline = false; p.peer = conn.peer; delete p.awayPeer;
-    log(`🔌 ${p.name} 回來了`, 'good');
-    toastAll(`🔌 ${p.name} 回來了，換回自己操作`, 'good');
-  });
-  render();
-}
-
-function uniqueName(name) {
-  const taken = new Set((S ? S.players : NET.lobby).map(x => x.name));
-  if (!taken.has(name)) return name;
-  for (let k = 2; k < 10; k++) { const n = name.slice(0, 5) + k; if (!taken.has(n)) return n; }
-  return name;
-}
-
-function hostHandle(conn, msg) {
-  if (!msg || typeof msg !== 'object') return;
-  if (msg.t === 'hello') {
-    const name = cleanName(msg.name) || '玩家';
-    if (msg.resume) {
-      // 加入者自動重連：舊連線可能還沒被判定斷線，先讓它下線再接回
-      if (S) {
-        const old = S.players.find(p => p.peer && p.peer !== conn.peer && p.name === name);
-        if (old) { const oc = NET.conns.get(old.peer); markOffline(old.peer); if (oc) { NET.conns.delete(oc.peer); oc.close(); } }
-      } else {
-        const old = NET.lobby.find(l => l.peer && l.name === name);
-        if (old) { const oc = NET.conns.get(old.peer); NET.lobby = NET.lobby.filter(l => l !== old); if (oc) { NET.conns.delete(oc.peer); oc.close(); } }
-      }
-    }
-    if (S) {
-      // 遊戲進行中：同名的離線玩家可以重新連線
-      const i = S.players.findIndex(p => p.offline && p.name === name);
-      if (i < 0 || S.over) { conn.send({ t: 'reject', reason: '遊戲已經開始了，無法加入' }); setTimeout(() => conn.close(), 800); return; }
-      const p = S.players[i];
-      if (p.awayPeer) NET.conns.delete(p.awayPeer);
-      p.cpu = false; p.offline = false; p.peer = conn.peer; delete p.awayPeer;
-      NET.conns.set(conn.peer, conn);
-      conn.send({ t: 'start' });
-      log(`🔌 ${p.name} 重新連線了`, 'good');
-      toastAll(`🔌 ${p.name} 重新連線了`, 'good');
-      render();
-      return;
-    }
-    if (NET.lobby.length >= MAX_HUMANS) { conn.send({ t: 'reject', reason: '房間已滿（最多 4 人）' }); setTimeout(() => conn.close(), 800); return; }
-    NET.conns.set(conn.peer, conn);
-    NET.lobby.push({ peer: conn.peer, name: uniqueName(name) });
-    renderHostLobby();
-    return;
-  }
-  if (msg.t === 'answer') {
-    const pd = NET.pending.get(msg.id);
-    if (!pd || !S || S.players[pd.i].peer !== conn.peer) return;
-    NET.pending.delete(msg.id);
-    pd.res(msg.value);
-  }
-}
-
-function hostConnClosed(conn) {
-  if (NET.conns.get(conn.peer) !== conn) return;
-  NET.conns.delete(conn.peer);
-  if (!S) {
-    NET.lobby = NET.lobby.filter(l => l.peer !== conn.peer);
-    renderHostLobby();
-    return;
-  }
-  markOffline(conn.peer);
-}
-
-function lobbyListHTML(list, meIdx) {
-  return `<div class="lobbyList">${list.map((l, k) => `
-    <div class="prow"><span class="chip" style="background:${COLORS[k]}">${k + 1}</span>
-      <span>${l.name}${k === 0 ? ' <small class="hint">房主</small>' : ''}${k === meIdx ? ' <small class="you">你</small>' : ''}</span></div>`).join('')}</div>`;
-}
-
-function renderHostLobby() {
-  const years = $('#lYears') ? $('#lYears').value : '3';
-  const fill = $('#lFill') ? $('#lFill').value : '0';
-  const link = location.origin + location.pathname + '?room=' + NET.code;
-  $('#lobby').innerHTML = `
-    <div class="room">
-      <div class="hint">房間代碼</div>
-      <div class="code">${NET.code}</div>
-      <div class="share"><input type="text" readonly id="shareLink" value="${link}"><button class="btn sm" id="btnCopy" type="button">複製連結</button></div>
-      <p class="hint">把代碼或連結傳給朋友，他們打開後輸入名字就能加入。開始前請保持這個頁面開著。</p>
-    </div>
-    <h4>玩家（${NET.lobby.length}/${MAX_HUMANS}）</h4>
-    ${lobbyListHTML(NET.lobby, 0)}
-    <div class="opts">
-      <label>遊戲年數
-        <select id="lYears">${[1, 3, 5, 10, 20].map(y => `<option value="${y}" ${String(y) === years ? 'selected' : ''}>${y} 年${y === 1 ? '（試玩）' : ''}</option>`).join('')}</select>
-      </label>
-      <label>電腦玩家
-        <select id="lFill">${[['0', '不加'], ['3', '補到 3 人'], ['4', '補到 4 人']].map(([v, t]) => `<option value="${v}" ${v === fill ? 'selected' : ''}>${t}</option>`).join('')}</select>
-      </label>
-    </div>
-    <div class="btns"><button class="btn primary" id="btnLStart" type="button">開始遊戲</button></div>
-    <p class="hint" id="startHint"></p>`;
-  const check = () => {
-    const total = Math.max(NET.lobby.length, +$('#lFill').value);
-    $('#btnLStart').disabled = total < 2;
-    $('#startHint').textContent = total < 2 ? '至少需要 2 位玩家：等朋友加入，或加入電腦玩家' : '';
-  };
-  $('#lFill').onchange = check;
-  check();
-  $('#btnCopy').onclick = async () => {
-    try { await navigator.clipboard.writeText(link); toast('已複製邀請連結', 'good'); }
-    catch (e) { $('#shareLink').select(); toast('請長按連結手動複製'); }
-  };
-  $('#btnLStart').onclick = hostStart;
-  netSend({ t: 'lobby', code: NET.code, list: NET.lobby.map(l => ({ name: l.name, peer: l.peer })) });
-}
-
-function hostStart() {
-  const fill = +$('#lFill').value;
-  const players = NET.lobby.map((l, k) => ({ name: l.name, cpu: false, slot: k, peer: l.peer }));
-  const cpuNames = CPU_NAMES.filter(n => !players.some(p => p.name === n));
-  while (players.length < fill) players.push({ name: cpuNames.shift() || '電腦' + (players.length + 1), cpu: true, slot: players.length });
-  if (players.length < 2) return;
-  newGame({ players, years: +$('#lYears').value, speed: 'normal' });
-  netSend({ t: 'start' });
-  $('#setup').classList.add('hidden');
-  gameLoop();
-}
-
-/* ================= 加入者 ================= */
 function joinRoom() {
   const code = $('#joinCode').value.trim().toUpperCase();
   if (!/^[A-Z0-9]{4}$/.test(code)) { netError('請輸入 4 碼房間代碼'); return; }
+  startOnline(code, false);
+}
+
+function startOnline(code, create) {
   netError('');
   audioInit();
   lockNetForm(true);
-  $('#lobby').innerHTML = '<p class="hint">連線中…</p>';
+  $('#lobby').innerHTML = `<p class="hint">${create ? '建立房間中…' : '連線中…'}</p>`;
   NET.code = code;
   NET.myName = myName();
+  NET.createTries = 0;
   NET.hostConn = { send: msg => wsSend(NET.ws, msg) };
-  clientConnect(false);
+  clientConnect({ create });
 }
 
-function clientLost() {
+function clientLost(reason) {
   if (NET.ended || NET.rejected || NET.lostShown) return;
   NET.lostShown = true;
-  modal('<h3>📴 與房主的連線中斷了</h3><p>房主可能關閉了遊戲，或網路不穩。重新整理後用同樣的名字加入，就能接回原本的位置。</p>',
+  modal(`<h3>📴 與伺服器的連線中斷了</h3><p>${reason || '網路可能不穩。重新整理後用同樣的名字加入，就能接回原本的位置。'}</p>`,
     [{ label: '重新整理', value: 1, cls: 'primary' }]).then(() => location.reload());
 }
 
-function clientConnect(resume) {
-  const ws = new WebSocket(roomURL(NET.code, { role: 'client' }));
-  let welcomed = false;
+function clientConnect({ create = false, resume = false } = {}) {
+  const ws = new WebSocket(roomURL(NET.code, { create: create ? '1' : '' }));
+  let welcomed = false, refused = false;
   const fail = msg => { netError(msg); lockNetForm(false); $('#lobby').innerHTML = ''; NET.mode = 'local'; };
   const timer = setTimeout(() => { if (!welcomed) { try { ws.close(); } catch (e) { /* ignore */ } } }, 15000);
   ws.onmessage = e => {
     let m;
     try { m = JSON.parse(e.data); } catch (err) { return; }
     if (m.sys === 'error') {
-      welcomed = true; // 不要再重試
+      refused = true;
       clearTimeout(timer);
-      if (resume) clientLost();
-      else fail(m.reason === 'noroom' ? '找不到這個房間，請確認代碼是否正確' : m.reason === 'full' ? '房間已滿' : '連線失敗');
+      if (m.reason === 'taken' && create && ++NET.createTries < 6) { NET.code = genCode(); clientConnect({ create: true }); return; }
+      if (resume) clientLost('這個房間已經關閉了。');
+      else fail(m.reason === 'noroom' ? '找不到這個房間，請確認代碼是否正確' : m.reason === 'full' ? '房間已滿' : '連線失敗，請稍後再試');
       return;
     }
     if (m.sys === 'welcome') {
@@ -350,7 +99,7 @@ function clientConnect(resume) {
       }
       wsSend(ws, { t: 'hello', name: NET.myName, resume });
       if (!NET.watch) {
-        // 太久沒收到房主的訊息（連心跳都沒有）就主動重連
+        // 太久沒收到伺服器的訊息（連心跳都沒有）就主動重連
         NET.watch = setInterval(() => {
           if (NET.ws && Date.now() - NET.lastSeen > AWAY_MS + 10000) { NET.lastSeen = Date.now(); try { NET.ws.close(); } catch (e) { /* ignore */ } }
         }, HEARTBEAT_MS);
@@ -363,35 +112,80 @@ function clientConnect(resume) {
   };
   ws.onclose = () => {
     clearTimeout(timer);
-    if (NET.ended || NET.rejected) return;
+    if (refused || NET.ended || NET.rejected) return;
     if (!welcomed) {
-      if (!NET.joined) { fail('無法連上連線伺服器，請確認網路後再試'); return; }
-      // 重連失敗：最多試 60 秒左右
-      if ((NET.retry || 0) >= 14) { clientLost(); return; }
+      if (!NET.joined) { fail('無法連上遊戲伺服器，請確認網路後再試'); return; }
+      if ((NET.retry || 0) >= 14) { clientLost(); return; } // 大約試 60 秒
     } else if (NET.ws !== ws) return;
     NET.ws = null;
     const n = NET.retry = (NET.retry || 0) + 1;
     if (n === 1) setStatusLocal('📶 連線中斷，重新連線中…');
-    setTimeout(() => clientConnect(true), backoff(n - 1));
+    setTimeout(() => clientConnect({ resume: true }), backoff(n - 1));
   };
 }
 
+/* ================= 等待室 ================= */
+function lobbyListHTML(list, meIdx, adminIdx) {
+  return `<div class="lobbyList">${list.map((l, k) => `
+    <div class="prow"><span class="chip" style="background:${COLORS[k]}">${k + 1}</span>
+      <span>${l.name}${k === adminIdx ? ' <small class="hint">房主</small>' : ''}${k === meIdx ? ' <small class="you">你</small>' : ''}</span></div>`).join('')}</div>`;
+}
+
+function renderLobby(msg) {
+  $('#netForm').classList.add('hidden');
+  const me = msg.list.findIndex(l => l.peer === NET.myId);
+  if (me >= 0) NET.myName = msg.list[me].name; // 伺服器可能幫同名的人加上編號
+  const adminIdx = msg.list.findIndex(l => l.peer === msg.admin);
+  const isAdmin = msg.admin === NET.myId;
+  const link = (onServer() ? location.origin + '/' : ROOM_SERVER + '/') + '?room=' + msg.code;
+  const fillText = { 0: '不加', 3: '補到 3 人', 4: '補到 4 人' };
+  const total = Math.max(msg.list.length, msg.fill);
+  $('#lobby').innerHTML = `
+    <div class="room">
+      <div class="hint">房間代碼</div>
+      <div class="code">${msg.code}</div>
+      <div class="share"><input type="text" readonly id="shareLink" value="${link}"><button class="btn sm" id="btnCopy" type="button">複製連結</button></div>
+      <p class="hint">把代碼或連結傳給朋友，他們打開後輸入名字就能加入。遊戲在伺服器上進行，任何人暫時離開都不會中斷。</p>
+    </div>
+    <h4>玩家（${msg.list.length}/${MAX_HUMANS}）</h4>
+    ${lobbyListHTML(msg.list, me, adminIdx)}
+    ${isAdmin ? `
+    <div class="opts">
+      <label>遊戲年數
+        <select id="lYears">${[1, 3, 5, 10, 20].map(y => `<option value="${y}" ${y === msg.years ? 'selected' : ''}>${y} 年${y === 1 ? '（試玩）' : ''}</option>`).join('')}</select>
+      </label>
+      <label>電腦玩家
+        <select id="lFill">${[0, 3, 4].map(v => `<option value="${v}" ${v === msg.fill ? 'selected' : ''}>${fillText[v]}</option>`).join('')}</select>
+      </label>
+    </div>
+    <div class="btns"><button class="btn primary" id="btnLStart" type="button" ${total < 2 ? 'disabled' : ''}>開始遊戲</button></div>
+    <p class="hint">${total < 2 ? '至少需要 2 位玩家：等朋友加入，或加入電腦玩家' : ''}</p>`
+    : `<p class="hint">遊戲年數：${msg.years} 年・電腦玩家：${fillText[msg.fill]}</p>
+    <p class="hint">✅ 已加入房間，等待房主開始遊戲…</p>`}`;
+  $('#btnCopy').onclick = async () => {
+    try { await navigator.clipboard.writeText(link); toast('已複製邀請連結', 'good'); }
+    catch (e) { $('#shareLink').select(); toast('請長按連結手動複製'); }
+  };
+  if (isAdmin) {
+    const config = () => wsSend(NET.ws, { t: 'config', years: +$('#lYears').value, fill: +$('#lFill').value });
+    $('#lYears').onchange = config;
+    $('#lFill').onchange = config;
+    $('#btnLStart').onclick = () => { $('#btnLStart').disabled = true; wsSend(NET.ws, { t: 'start' }); };
+  }
+}
+
+/* ================= 遊戲中：照伺服器的指示顯示畫面、回答操作 ================= */
 function clientHandle(msg) {
   if (!msg || typeof msg !== 'object') return;
   switch (msg.t) {
-    case 'lobby': {
-      $('#netForm').classList.add('hidden');
-      const me = msg.list.findIndex(l => l.peer === NET.myId);
-      if (me >= 0) NET.myName = msg.list[me].name; // 房主可能幫同名的人加上編號
-      $('#lobby').innerHTML = `<div class="room"><div class="hint">房間代碼</div><div class="code">${msg.code}</div></div>
-        <h4>玩家（${msg.list.length}/${MAX_HUMANS}）</h4>${lobbyListHTML(msg.list, me)}
-        <p class="hint">✅ 已加入房間，等待房主開始遊戲…</p>`;
+    case 'lobby':
+      renderLobby(msg);
       break;
-    }
     case 'reject':
       NET.rejected = true;
       netError(msg.reason);
       lockNetForm(false);
+      $('#netForm').classList.remove('hidden');
       $('#lobby').innerHTML = '';
       NET.mode = 'local';
       break;
@@ -447,10 +241,10 @@ function clientHandle(msg) {
       modal(msg.html, [{ label: '確定', value: true, cls: 'primary' }], { auto: msg.auto });
       break;
     case 'ping':
-      try { NET.hostConn.send({ t: 'pong' }); } catch (e) { /* ignore */ }
+      wsSend(NET.ws, { t: 'pong' });
       break;
     case 'ask':
-      if (!S || NET.curAsk === msg.id) break; // 房主重連後補送的重複提問
+      if (!S || NET.curAsk === msg.id) break;
       NET.answering = true;
       NET.curAsk = msg.id;
       if (msg.kind === 'menu') {
@@ -461,7 +255,7 @@ function clientHandle(msg) {
         if (NET.curAsk !== msg.id) return;
         NET.answering = false;
         NET.curAsk = null;
-        try { NET.hostConn.send({ t: 'answer', id: msg.id, value }); } catch (e) { /* ignore */ }
+        wsSend(NET.ws, { t: 'answer', id: msg.id, value });
         setStatusLocal('已送出，等待中…');
       });
       break;
@@ -494,7 +288,4 @@ function netInit() {
     switchTab('online');
     $('#joinCode').value = room.toUpperCase().slice(0, 4);
   }
-  window.addEventListener('beforeunload', e => {
-    if (NET.mode === 'host' && S && !S.over) { e.preventDefault(); e.returnValue = ''; }
-  });
 }

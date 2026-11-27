@@ -1,9 +1,11 @@
 {
-  // 寶島鐵道大亨：遊戲網頁 + 線上對戰中繼伺服器，一起部署在 Cloudflare Workers
+  // 寶島鐵道大亨：遊戲網頁 + 遊戲伺服器（每個房間一個 Durable Object），一起部署在 Cloudflare Workers
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "formosa-rail-tycoon",
   "main": "worker/index.js",
   "compatibility_date": "2025-09-01",
+  // 先把 js/game.js 包成伺服器模組 .build/engine.js
+  "build": { "command": "node tools/build-engine.mjs", "watch_dir": ["js", "server", "tools"] },
   "assets": { "directory": ".", "binding": "ASSETS" },
   "durable_objects": {
     "bindings": [{ "name": "ROOMS", "class_name": "Room" }]

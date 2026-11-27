@@ -13,3 +13,6 @@ package.json
 package-lock.json
 README.md
 .dev.vars
+server
+tools
+.build

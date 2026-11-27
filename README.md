@@ -1,4 +1,4 @@
-# 🚂 寶島鐵道大亨
+﻿# 🚂 寶島鐵道大亨
 
 搭火車環島、買下全台名產，成為台灣第一的鐵道大亨！
 
@@ -24,9 +24,12 @@
 2. 朋友打開遊戲（或房主分享的連結），輸入名字與代碼加入
 3. 人數不夠可以加入電腦玩家，房主按「開始遊戲」
 
-房主的瀏覽器負責執行遊戲，請保持房主頁面開著。玩家斷線時會由電腦代打，回來後（或用同樣名字重新加入）就能接手。
-連線透過 Cloudflare Workers + Durable Objects 轉送（`worker/index.js`），每個房間一個 Durable Object。
-房主或玩家網路短暫中斷時會自動重連；房主斷線後房間保留 10 分鐘。
+遊戲在 Cloudflare 的伺服器上執行，每個房間一個 Durable Object（`worker/index.js`）。每個人的瀏覽器只負責顯示和回答自己的操作，所以任何人（包括房主）離開都不會中斷遊戲：
+- 斷線的玩家由電腦代打，自動重連或用同樣名字重新加入就能接手
+- 每回合開始時存檔到伺服器；伺服器重新啟動（例如更新版本）後，從那一回合開頭繼續
+- 所有人都離開 1 分鐘後遊戲暫停，24 小時內有人用原本的名字回來就繼續
+
+伺服器跑的是同一份 `js/game.js`：`tools/build-engine.mjs` 把 `js/data.js`、`js/game.js` 和 `server/`（伺服器版的畫面替身與房間邏輯）包成 `.build/engine.mjs`，部署時自動執行。
 
 遊戲網址：https://formosa-rail-tycoon.formosa-rail-tycoon.workers.dev
 （GitHub Pages 版和 Android App 也會連到這台伺服器，網址設定在 `js/net.js` 的 `ROOM_SERVER`。）
@@ -36,7 +39,8 @@
 ```bash
 npm install
 npx wrangler login     # 第一次需要
-npm run deploy         # 網頁和連線伺服器一起上傳（不上傳的檔案列在 .assetsignore）
+npm test               # 包含整場線上遊戲在伺服器上跑完的測試
+npm run deploy         # 網頁和遊戲伺服器一起上傳（不上傳的檔案列在 .assetsignore）
 ```
 
 ## 本機執行
@@ -74,5 +78,7 @@ App 每次開啟或回到前景時會查 GitHub Releases 的最新版；有新�
 - `js/data.js` — 車站、路線、物件、卡片資料
 - `js/game.js` — 遊戲引擎與介面
 - `js/net.js` — 線上對戰（瀏覽器端）
-- `worker/index.js` — Cloudflare 連線伺服器
+- `worker/index.js` — Cloudflare 遊戲伺服器（每個房間一個 Durable Object）
+- `server/` — 伺服器版的畫面替身與房間邏輯
+- `tools/build-engine.mjs` — 把遊戲包成伺服器模組
 - `wrangler.jsonc` — Cloudflare 部署設定
