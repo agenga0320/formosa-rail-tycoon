@@ -782,7 +782,16 @@ async function gameLoop() {
   if (!S.introDone) {
     S.introDone = true;
     await banner('<small>遊戲開始</small>寶島鐵道大亨', '#e9b949', 1400, 'fanfare');
-    await message('🎲 出發順序與起點', S.players.map((p, k) => `${k + 1}. <b style="color:${p.color}">${p.name}</b>　從 <b>${placeName(p.pos)}</b> 出發`).join('<br>') + '<br>先用輪盤決定第一個目的地。', anyHuman() && NET.mode !== 'host' ? 0 : 2600);
+    // 依出發順序逐一把鏡頭移到每位玩家，介紹他從哪一站出發（先把狀態送給線上玩家，他們才看得到棋子）
+    netSend({ t: 'state', S: stateForNet() });
+    for (const [k, p] of S.players.entries()) {
+      focusNode(p.pos, true);
+      netSend({ t: 'focus', node: p.pos });
+      await sleep(450);
+      floatAll(p.pos, '📍', p.color);
+      await message(`🎲 第 ${k + 1} 位出發`, `<b style="color:${p.color}">${p.name}</b> 從 <b>${placeName(p.pos)}</b> 出發！`, 2200);
+    }
+    await message('🚩 決定目的地', '接下來用輪盤決定第一個目的地。', anyHuman() && NET.mode !== 'host' ? 0 : 1800);
     await roulette(S.goal);
   }
   while (!S.over) {

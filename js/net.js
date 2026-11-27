@@ -301,6 +301,9 @@ function clientHandle(msg) {
     case 'dice':
       diceResultLocal(msg.vals);
       break;
+    case 'focus':
+      if (S) focusNode(msg.node, true);
+      break;
     case 'roulette':
       rouletteLocal(msg.name);
       break;
